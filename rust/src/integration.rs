@@ -272,7 +272,7 @@ impl LinearClient {
                     last_error = Some(LinearError::ApiRequest(e.to_string()));
                     if attempt + 1 < MAX_RETRIES {
                         tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
-                        backoff_ms *= 2;
+                        backoff_ms = backoff_ms.saturating_mul(2);
                         continue;
                     }
                     return Err(last_error.unwrap());
@@ -283,8 +283,16 @@ impl LinearClient {
             // Retry on rate limit (429) or server errors (5xx)
             if status.as_u16() == 429 || status.is_server_error() {
                 if attempt + 1 < MAX_RETRIES {
-                    tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
-                    backoff_ms *= 2;
+                    // Respect Retry-After header if present, otherwise use exponential backoff
+                    let retry_after_ms = response
+                        .headers()
+                        .get("Retry-After")
+                        .and_then(|v| v.to_str().ok())
+                        .and_then(|s| s.parse::<u64>().ok())
+                        .map(|v| v * 1000)
+                        .unwrap_or(backoff_ms);
+                    tokio::time::sleep(std::time::Duration::from_millis(retry_after_ms)).await;
+                    backoff_ms = backoff_ms.saturating_mul(2);
                     // Reconstruct client for retry (reqwest doesn't support body reuse)
                     let response_body: Result<Value, _> = response.json().await;
                     if let Ok(body) = response_body {

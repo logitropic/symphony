@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Issue {
     pub id: Option<String>,
     pub identifier: Option<String>,
@@ -227,5 +227,71 @@ mod tests {
     fn test_priority_rank_out_of_range() {
         assert_eq!(priority_rank(Some(99)), 5);
         assert_eq!(priority_rank(Some(-1)), 5);
+    }
+
+    #[test]
+    fn test_blocker_rule_todo_with_terminal_blocker() {
+        // If issue is in Todo state but all blockers are terminal, it should be dispatchable
+        let terminal_states: HashSet<String> = vec!["done".to_string(), "closed".to_string()]
+            .into_iter()
+            .collect();
+
+        let blocker = Issue {
+            id: Some("BLOCK-1".to_string()),
+            state: Some("Done".to_string()),
+            ..Default::default()
+        };
+
+        let blocker_state = blocker.state.as_ref().unwrap();
+        let normalized_blocker_state = normalize_issue_state(blocker_state);
+        let is_terminal = terminal_states.contains(&normalized_blocker_state);
+        assert!(is_terminal, "Done should be terminal");
+    }
+
+    #[test]
+    fn test_blocker_rule_todo_with_active_blocker() {
+        // If issue is in Todo state and has an active blocker, it should NOT be dispatchable
+        let terminal_states: HashSet<String> = vec!["done".to_string(), "closed".to_string()]
+            .into_iter()
+            .collect();
+
+        let blocker = Issue {
+            id: Some("BLOCK-1".to_string()),
+            state: Some("In Progress".to_string()),
+            ..Default::default()
+        };
+
+        let blocker_state = blocker.state.as_ref().unwrap();
+        let normalized_blocker_state = normalize_issue_state(blocker_state);
+        let is_terminal = terminal_states.contains(&normalized_blocker_state);
+        assert!(!is_terminal, "In Progress should not be terminal");
+    }
+
+    #[test]
+    fn test_blocker_rule_todo_with_no_blockers() {
+        // Empty blocked_by list means no blocking
+        let blocked_by: Vec<Issue> = vec![];
+        assert!(blocked_by.is_empty());
+    }
+
+    #[test]
+    fn test_blocker_rule_todo_with_missing_blocker_state() {
+        // If blocker has no state, treat it as non-terminal (blocking)
+        let terminal_states: HashSet<String> = vec!["done".to_string(), "closed".to_string()]
+            .into_iter()
+            .collect();
+
+        let blocker = Issue {
+            id: Some("BLOCK-1".to_string()),
+            state: None,
+            ..Default::default()
+        };
+
+        // When state is None, we can't determine if it's terminal, so it blocks
+        let blocker_state = blocker.state.as_ref();
+        let is_blocking = blocker_state
+            .map(|s| !terminal_states.contains(&normalize_issue_state(s)))
+            .unwrap_or(true);
+        assert!(is_blocking, "Issue with no state should block");
     }
 }

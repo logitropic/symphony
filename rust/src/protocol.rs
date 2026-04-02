@@ -47,11 +47,11 @@ impl Session {
         }
     }
 
-    fn set_child_reader(&self, child: Child, reader: BufReader<tokio::process::ChildStdout>) {
+    async fn set_child_reader(&self, child: Child, reader: BufReader<tokio::process::ChildStdout>) {
         *self.child.lock().unwrap() = Some(child);
-        *self.reader.try_lock().unwrap_or_else(|_| {
-            panic!("reader lock should be available immediately after Session::new")
-        }) = Some(reader);
+        // At this point the lock was just created in `new()`, so it should be available
+        let mut guard = self.reader.lock().await;
+        *guard = Some(reader);
     }
 }
 
@@ -142,7 +142,7 @@ impl CodexClient {
         // Re-wrap stdout in a fresh BufReader (reader was consumed)
         let stdout = child.stdout.take().ok_or(CodexError::CodexNotFound)?;
         let reader = BufReader::new(stdout);
-        session.set_child_reader(child, reader);
+        session.set_child_reader(child, reader).await;
 
         Ok(Arc::new(session))
     }

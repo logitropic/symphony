@@ -222,10 +222,7 @@ impl Orchestrator {
         // Process stalled issues outside the lock
         for (issue_id, entry, retry_attempt) in stalled_entries {
             warn!(issue_id = %issue_id, elapsed_ms = ?stall_timeout_ms, retry_attempt = %retry_attempt, "Issue stalled, scheduling retry");
-            let backoff_ms = std::cmp::min(
-                60_000 * 2_i64.pow(retry_attempt as u32),
-                max_retry_backoff_ms,
-            );
+            let backoff_ms = calculate_backoff(retry_attempt, max_retry_backoff_ms);
             let retry_entry = crate::domain::RetryEntry {
                 attempt: retry_attempt + 1,
                 due_at_ms: now.timestamp_millis() + backoff_ms,
@@ -666,4 +663,60 @@ async fn cleanup_worker(
     }
 
     info!(issue_id = %issue_id, "Worker cleanup complete");
+}
+
+/// Calculate exponential backoff with capping.
+fn calculate_backoff(retry_attempt: i32, max_backoff_ms: i64) -> i64 {
+    (60_000_i64)
+        .saturating_mul(2_i64.saturating_pow(retry_attempt as u32))
+        .min(max_backoff_ms)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_calculate_backoff_exponential() {
+        let max = i64::MAX;
+        assert_eq!(calculate_backoff(0, max), 60_000);
+        assert_eq!(calculate_backoff(1, max), 120_000);
+        assert_eq!(calculate_backoff(2, max), 240_000);
+        assert_eq!(calculate_backoff(3, max), 480_000);
+    }
+
+    #[test]
+    fn test_calculate_backoff_caps_at_max() {
+        let max = 300_000;
+        assert_eq!(calculate_backoff(0, max), 60_000);
+        assert_eq!(calculate_backoff(1, max), 120_000);
+        assert_eq!(calculate_backoff(2, max), 240_000);
+        assert_eq!(calculate_backoff(3, max), 300_000); // capped
+        assert_eq!(calculate_backoff(4, max), 300_000); // still capped
+    }
+
+    #[test]
+    fn test_calculate_backoff_overflow_safety() {
+        // With saturating_mul and saturating_pow, large values shouldn't overflow
+        let max = i64::MAX;
+        // 2^30 * 60000 = 64 trillion, well under i64::MAX
+        assert_eq!(calculate_backoff(30, max), 64_424_509_440_000);
+        // Even 2^62 * 60000 would overflow, but saturating_pow caps at u32::MAX
+        // 2_i64.saturating_pow(u32::MAX) would saturate to i64::MAX
+        let result = calculate_backoff(u32::MAX as i32, max);
+        assert_eq!(result, max); // saturates to max
+    }
+
+    #[test]
+    fn test_calculate_backoff_zero_attempt() {
+        assert_eq!(calculate_backoff(0, i64::MAX), 60_000);
+    }
+
+    #[test]
+    fn test_calculate_backoff_large_attempt_saturates() {
+        // Very large retry counts should saturate, not overflow
+        let max = 300_000;
+        // Even with high attempts, backoff is capped by max
+        assert_eq!(calculate_backoff(100, max), max);
+    }
 }
