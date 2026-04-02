@@ -26,6 +26,7 @@ pub enum OrchestratorError {
     CodexError(String),
 }
 
+#[derive(Clone)]
 pub struct Orchestrator {
     state: Arc<Mutex<OrchestratorRuntimeState>>,
     config: ConfigSchema,
@@ -132,9 +133,11 @@ impl Orchestrator {
         });
 
         // Step 5: Dispatch eligible issues
+        let state_arc = Arc::new(self.state.clone());
+        let orchestrator_arc: Arc<Self> = Arc::new(self.clone());
         for issue in sorted_issues {
             let slots_available = {
-                let state = self.state.lock().await;
+                let state = state_arc.lock().await;
                 let running_count = state.running.len() as i32;
                 let max = state.max_concurrent_agents;
                 max - running_count > 0
@@ -145,8 +148,19 @@ impl Orchestrator {
             }
 
             if self.should_dispatch(&issue).await {
-                if let Err(e) = self.dispatch_issue(issue).await {
-                    warn!(error = %e, "Failed to dispatch issue");
+                let identifier = issue.identifier.clone().unwrap_or_else(|| issue.id.clone().unwrap_or_default());
+                match self.workspace_manager.create_for_issue(&identifier) {
+                    Ok(workspace) => {
+                        if let Err(e) = self.workspace_manager.run_before_run_hook(&workspace.path) {
+                            warn!(error = %e, "Before_run hook failed");
+                        }
+                        if let Err(e) = orchestrator_arc.clone().dispatch_issue(issue, workspace.path).await {
+                            warn!(error = %e, "Failed to dispatch issue");
+                        }
+                    }
+                    Err(e) => {
+                        warn!(error = %e, "Failed to create workspace");
+                    }
                 }
             }
         }
@@ -341,30 +355,24 @@ impl Orchestrator {
         true
     }
 
-    async fn dispatch_issue(&self, issue: crate::domain::Issue) -> Result<(), OrchestratorError> {
+    async fn dispatch_issue(
+        self: Arc<Self>,
+        issue: crate::domain::Issue,
+        workspace: std::path::PathBuf,
+    ) -> Result<(), OrchestratorError> {
         let issue_id = issue.id.clone().unwrap();
         let identifier = issue.identifier.clone().unwrap_or_else(|| issue_id.clone());
+        let workspace_path_str = workspace.to_string_lossy().to_string();
 
         info!(issue_id = %issue_id, issue_identifier = %identifier, "Dispatching issue");
 
-        // Create workspace
-        let workspace = self
-            .workspace_manager
-            .create_for_issue(&identifier)
-            .map_err(|e| OrchestratorError::WorkspaceError(e.to_string()))?;
-
-        // Run before_run hook
-        self.workspace_manager
-            .run_before_run_hook(&workspace.path)
-            .map_err(|e| OrchestratorError::WorkspaceError(e.to_string()))?;
-
-        // Update state
+        // Insert initial entry (worker will update session_id, pid, etc.)
         let entry = RunningEntry {
-            pid: 0, // Would be actual PID in real implementation
+            pid: 0,
             identifier: identifier.clone(),
             issue: issue.clone(),
             worker_host: None,
-            workspace_path: Some(workspace.path.to_string_lossy().to_string()),
+            workspace_path: Some(workspace_path_str.clone()),
             session_id: None,
             last_codex_message: None,
             last_codex_timestamp: None,
@@ -383,13 +391,35 @@ impl Orchestrator {
 
         {
             let mut state = self.state.lock().await;
-            state
-                .running
-                .insert(issue_id.clone(), entry);
-            state.claimed.insert(issue_id);
+            state.running.insert(issue_id.clone(), entry);
+            state.claimed.insert(issue_id.clone());
         }
 
-        // In real implementation, would spawn worker task here
+        // Spawn worker task
+        let worker_state = self.state.clone();
+        let worker_config = self.config.clone();
+        let worker_workspace_manager = self.workspace_manager.clone();
+        let worker_codex_client = self.codex_client.clone();
+        let worker_workspace_path = workspace.clone();
+        let worker_issue_id = issue_id.clone();
+        let worker_identifier = identifier.clone();
+        let worker_issue = issue.clone();
+        let shutdown_rx = self.shutdown_rx.clone();
+
+        tokio::spawn(async move {
+            run_worker(
+                worker_state,
+                worker_config,
+                worker_workspace_manager,
+                worker_codex_client,
+                worker_workspace_path,
+                worker_issue_id,
+                worker_identifier,
+                worker_issue,
+                shutdown_rx,
+            )
+            .await;
+        });
 
         Ok(())
     }
@@ -397,4 +427,178 @@ impl Orchestrator {
     pub async fn get_state(&self) -> OrchestratorRuntimeState {
         self.state.lock().await.clone()
     }
+}
+
+async fn run_worker(
+    state: Arc<Mutex<OrchestratorRuntimeState>>,
+    config: ConfigSchema,
+    workspace_manager: WorkspaceManager,
+    codex_client: CodexClient,
+    workspace_path: std::path::PathBuf,
+    issue_id: String,
+    identifier: String,
+    issue: crate::domain::Issue,
+    _shutdown_rx: tokio::sync::watch::Receiver<bool>,
+) {
+    let turn_timeout_ms = config.codex.turn_timeout_ms();
+
+    // Start Codex session
+    let session_result = codex_client.start_session(workspace_path.to_str().unwrap_or("")).await;
+
+    let session = match session_result {
+        Ok(s) => {
+            // Update state with session_id
+            let mut state_guard = state.lock().await;
+            if let Some(entry) = state_guard.running.get_mut(&issue_id) {
+                entry.session_id = Some(s.thread_id.clone());
+                entry.last_codex_timestamp = Some(Utc::now());
+                entry.last_codex_message = Some("Session started".to_string());
+            }
+            s
+        }
+        Err(e) => {
+            error!(issue_id = %issue_id, error = %e, "Failed to start Codex session");
+            let mut state_guard = state.lock().await;
+            if let Some(entry) = state_guard.running.get_mut(&issue_id) {
+                entry.last_codex_message = Some(format!("Session start failed: {}", e));
+                entry.last_codex_timestamp = Some(Utc::now());
+            }
+            // Remove from running - workspace cleanup will be handled by caller
+            state_guard.running.remove(&issue_id);
+            state_guard.claimed.remove(&issue_id);
+            return;
+        }
+    };
+
+    // Build the turn prompt from the workflow template
+    let prompt = build_turn_prompt(&issue);
+
+    // Clone values needed for the callback
+    let cb_issue_id = issue_id.clone();
+    let cb_state = state.clone();
+
+    // Run a turn with timeout
+    let turn_result = tokio::time::timeout(
+        std::time::Duration::from_millis(turn_timeout_ms as u64),
+        codex_client.run_turn(&session, &prompt, &issue, move |msg| {
+            // Update state with Codex events
+            if let Some(content) = msg.get("content").and_then(|c| c.as_str()) {
+                let mut state_guard = cb_state.blocking_lock();
+                if let Some(entry) = state_guard.running.get_mut(&cb_issue_id) {
+                    entry.last_codex_message = Some(content.to_string());
+                    entry.last_codex_timestamp = Some(Utc::now());
+                    entry.turn_count += 1;
+                }
+            }
+            if let Some(tokens) = msg.get("usage") {
+                let mut state_guard = cb_state.blocking_lock();
+                if let Some(entry) = state_guard.running.get_mut(&cb_issue_id) {
+                    if let Some(input) = tokens.get("inputTokens").and_then(|v| v.as_i64()) {
+                        entry.codex_input_tokens += input;
+                        entry.codex_last_reported_input_tokens = input;
+                    }
+                    if let Some(output) = tokens.get("outputTokens").and_then(|v| v.as_i64()) {
+                        entry.codex_output_tokens += output;
+                        entry.codex_last_reported_output_tokens = output;
+                    }
+                    if let Some(total) = tokens.get("totalTokens").and_then(|v| v.as_i64()) {
+                        entry.codex_total_tokens += total;
+                        entry.codex_last_reported_total_tokens = total;
+                    }
+                }
+            }
+        }),
+    ).await;
+
+    match turn_result {
+        Ok(Ok(())) => {
+            // Turn succeeded
+            let mut state_guard = state.lock().await;
+            if let Some(entry) = state_guard.running.get_mut(&issue_id) {
+                entry.last_codex_message = Some("Turn completed".to_string());
+                entry.last_codex_timestamp = Some(Utc::now());
+            }
+        }
+        Ok(Err(e)) => {
+            // Turn error
+            warn!(issue_id = %issue_id, error = %e, "Turn failed");
+            handle_turn_error(&state, &issue_id, &e).await;
+        }
+        Err(_) => {
+            // Timeout
+            warn!(issue_id = %issue_id, "Turn timed out after {}ms", turn_timeout_ms);
+            let mut state_guard = state.lock().await;
+            if let Some(entry) = state_guard.running.get_mut(&issue_id) {
+                entry.last_codex_message = Some(format!("Turn timed out after {}ms", turn_timeout_ms));
+                entry.last_codex_timestamp = Some(Utc::now());
+            }
+        }
+    }
+
+    // Worker cleanup
+    cleanup_worker(&state, &workspace_manager, &issue_id, &identifier).await;
+}
+
+fn build_turn_prompt(issue: &crate::domain::Issue) -> String {
+    let title = issue.title.as_deref().unwrap_or("(no title)");
+    let description = issue.description.as_deref().unwrap_or("(no description)");
+    let identifier = issue.identifier.as_deref().unwrap_or("(no identifier)");
+    let branch = issue.branch_name.as_deref().unwrap_or_else(|| {
+        static DEFAULT: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+        DEFAULT.get_or_init(|| format!("issue/{}", identifier))
+    });
+
+    let mut prompt = format!(
+        "Issue: {} - {}\n\nDescription:\n{}\n\n",
+        identifier, title, description
+    );
+
+    let non_empty_labels: Vec<_> = issue.labels.iter().filter(|l| !l.is_empty()).collect();
+    if !non_empty_labels.is_empty() {
+        prompt.push_str(&format!("Labels: {}\n", non_empty_labels.iter().map(|l| l.as_str()).collect::<Vec<_>>().join(", ")));
+    }
+
+    prompt.push_str(&format!("\nBranch: {}\n", branch));
+    prompt
+}
+
+
+async fn handle_turn_error(
+    state: &Arc<Mutex<OrchestratorRuntimeState>>,
+    issue_id: &str,
+    error: &crate::protocol::CodexError,
+) {
+    let mut state_guard = state.lock().await;
+    if let Some(entry) = state_guard.running.get_mut(issue_id) {
+        entry.last_codex_message = Some(format!("Turn error: {}", error));
+        entry.last_codex_timestamp = Some(Utc::now());
+        entry.retry_attempt += 1;
+    }
+}
+
+async fn cleanup_worker(
+    state: &Arc<Mutex<OrchestratorRuntimeState>>,
+    workspace_manager: &WorkspaceManager,
+    issue_id: &str,
+    identifier: &str,
+) {
+    // Update state
+    {
+        let mut state_guard = state.lock().await;
+        state_guard.running.remove(issue_id);
+        state_guard.claimed.remove(issue_id);
+    }
+
+    // Cleanup workspace
+    if let Err(e) = workspace_manager.remove_issue_workspaces(identifier) {
+        warn!(issue_id = %issue_id, error = %e, "Failed to cleanup workspace");
+    }
+
+    // Run after_run hook
+    let workspace_key = crate::domain::sanitize_identifier(identifier);
+    let workspace_root = &workspace_manager.workspace_root();
+    let workspace_path = workspace_root.join(&workspace_key);
+    workspace_manager.run_after_run_hook(&workspace_path);
+
+    info!(issue_id = %issue_id, "Worker cleanup complete");
 }

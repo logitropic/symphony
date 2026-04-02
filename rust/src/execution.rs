@@ -21,6 +21,7 @@ pub enum WorkspaceError {
     WorkspaceEqualsRoot,
 }
 
+#[derive(Clone)]
 pub struct WorkspaceManager {
     workspace_root: PathBuf,
     hooks: HooksConfig,
@@ -32,6 +33,10 @@ impl WorkspaceManager {
             workspace_root: config.workspace.root(),
             hooks: config.hooks.clone(),
         }
+    }
+
+    pub fn workspace_root(&self) -> &PathBuf {
+        &self.workspace_root
     }
 
     pub fn create_for_issue(&self, identifier: &str) -> Result<Workspace, WorkspaceError> {
@@ -155,5 +160,123 @@ impl WorkspaceManager {
                 Ok(())
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod workspace_manager_tests {
+    use super::*;
+    use crate::config::{ConfigSchema, HooksConfig, WorkspaceConfig};
+
+    fn temp_root() -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("symphony_test_{}", std::process::id()))
+    }
+
+    fn make_manager() -> WorkspaceManager {
+        let root = temp_root();
+        let config = ConfigSchema {
+            workspace: WorkspaceConfig { root: Some(root.to_string_lossy().to_string()) },
+            hooks: HooksConfig::default(),
+            ..Default::default()
+        };
+        WorkspaceManager::new(&config)
+    }
+
+    fn cleanup() {
+        let _ = std::fs::remove_dir_all(temp_root());
+    }
+
+    struct TestGuard;
+
+    impl TestGuard {
+        fn new() -> Self {
+            cleanup();
+            Self
+        }
+    }
+
+    impl Drop for TestGuard {
+        fn drop(&mut self) {
+            cleanup();
+        }
+    }
+
+    #[test]
+    fn test_workspace_path_valid_inside_root() {
+        let _guard = TestGuard::new();
+        let manager = make_manager();
+        let root = temp_root();
+        std::fs::create_dir_all(&root).unwrap();
+
+        let workspace_path = root.join("valid-issue");
+        std::fs::create_dir_all(&workspace_path).unwrap();
+
+        let result = manager.validate_workspace_path(&workspace_path);
+        assert!(result.is_ok(), "valid nested path should be ok");
+    }
+
+    #[test]
+    fn test_workspace_path_equals_root() {
+        let _guard = TestGuard::new();
+        let manager = make_manager();
+        let root = temp_root();
+        std::fs::create_dir_all(&root).ok();
+
+        let result = manager.validate_workspace_path(&root);
+        // Root path itself should be rejected (either WorkspaceEqualsRoot or other error)
+        assert!(result.is_err(), "root path itself should be rejected");
+    }
+
+    #[test]
+    fn test_workspace_path_outside_root_symlink() {
+        let _guard = TestGuard::new();
+        let manager = make_manager();
+        let root = temp_root();
+        let sibling = temp_root().parent().unwrap().join("symphony_test_sibling");
+        std::fs::create_dir_all(&root).ok();
+        std::fs::create_dir_all(&sibling).ok();
+
+        // Create a symlink inside root pointing outside
+        let symlink_path = root.join("escape");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&sibling, &symlink_path).ok();
+        #[cfg(not(unix))]
+        std::fs::create_dir_all(&symlink_path).ok();
+
+        let result = manager.validate_workspace_path(&symlink_path);
+        assert!(result.is_err(), "symlink escaping root should be rejected");
+    }
+
+    #[test]
+    fn test_workspace_path_outside_root_parent_traversal() {
+        let _guard = TestGuard::new();
+        let manager = make_manager();
+        let root = temp_root();
+        std::fs::create_dir_all(&root).ok();
+
+        // Create a sibling directory
+        let sibling = root.parent().unwrap().join("symphony_test_sibling");
+        std::fs::create_dir_all(&sibling).ok();
+
+        // The sibling path is outside root
+        let result = manager.validate_workspace_path(&sibling);
+        assert!(result.is_err(), "sibling path should be rejected");
+    }
+
+    #[test]
+    fn test_workspace_path_deeply_nested_valid() {
+        let _guard = TestGuard::new();
+        let manager = make_manager();
+        let root = temp_root();
+
+        // Ensure root exists
+        std::fs::create_dir_all(&root).ok();
+
+        let workspace_path = root.join("a/b/c/d/e");
+        // Create the nested directory
+        std::fs::create_dir_all(&workspace_path).ok();
+
+        let result = manager.validate_workspace_path(&workspace_path);
+        assert!(result.is_ok(), "deeply nested path should be valid: {:?}", result);
     }
 }

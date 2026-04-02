@@ -3,7 +3,7 @@ use serde::Serialize;
 use serde_json::Value;
 use std::sync::Arc;
 use thiserror::Error;
-use tracing::info;
+use tracing::{info, warn};
 
 #[derive(Error, Debug)]
 pub enum HttpError {
@@ -80,12 +80,24 @@ pub async fn run_http_server(
     use tokio::net::TcpListener;
 
     let addr = format!("127.0.0.1:{}", port);
-    let listener = TcpListener::bind(&addr).await.unwrap();
+    let listener = match TcpListener::bind(&addr).await {
+        Ok(l) => l,
+        Err(e) => {
+            warn!(port = port, "Failed to bind HTTP server: {}", e);
+            return;
+        }
+    };
 
     info!(port = port, "HTTP server listening on {}", addr);
 
     loop {
-        let (mut stream, _) = listener.accept().await.unwrap();
+        let (mut stream, _) = match listener.accept().await {
+            Ok(s) => s,
+            Err(e) => {
+                warn!("Failed to accept connection: {}", e);
+                continue;
+            }
+        };
         let state = state.clone();
 
         tokio::spawn(async move {

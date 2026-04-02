@@ -199,7 +199,7 @@ impl LinearClient {
 
         let response = self.client
             .post(&self.endpoint)
-            .header("Authorization", &self.api_key)
+            .header("Authorization", format!("Bearer {}", &self.api_key))
             .header("Content-Type", "application/json")
             .json(&body)
             .send()

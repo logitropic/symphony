@@ -136,3 +136,90 @@ pub fn priority_rank(priority: Option<i32>) -> i32 {
         _ => 5,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_sanitize_identifier_special_chars() {
+        // Special chars become dashes, then trailing dashes are trimmed
+        assert_eq!(sanitize_identifier("ABC-123!@#"), "abc-123");
+    }
+
+    #[test]
+    fn test_sanitize_identifier_trim_dashes() {
+        assert_eq!(sanitize_identifier("...hello..."), "hello");
+    }
+
+    #[test]
+    fn test_sanitize_identifier_lowercase() {
+        assert_eq!(sanitize_identifier("SYM-42"), "sym-42");
+    }
+
+    #[test]
+    fn test_sanitize_identifier_spaces_become_dashes() {
+        assert_eq!(sanitize_identifier("hello world"), "hello-world");
+    }
+
+    #[test]
+    fn test_sanitize_identifier_preserves_valid() {
+        assert_eq!(sanitize_identifier("my-valid_issue-1"), "my-valid_issue-1");
+    }
+
+    #[test]
+    fn test_sanitize_identifier_all_special() {
+        assert_eq!(sanitize_identifier("!@#$%"), "");
+    }
+
+    #[test]
+    fn test_normalize_issue_state_trim() {
+        assert_eq!(normalize_issue_state("  Done  "), "done");
+    }
+
+    #[test]
+    fn test_normalize_issue_state_lowercase() {
+        assert_eq!(normalize_issue_state("In Progress"), "in progress");
+    }
+
+    #[test]
+    fn test_normalize_issue_state_both() {
+        assert_eq!(normalize_issue_state("  CANCELLED  "), "cancelled");
+    }
+
+    #[test]
+    fn test_priority_rank_urgent() {
+        assert_eq!(priority_rank(Some(1)), 1);
+    }
+
+    #[test]
+    fn test_priority_rank_high() {
+        assert_eq!(priority_rank(Some(2)), 2);
+    }
+
+    #[test]
+    fn test_priority_rank_medium() {
+        assert_eq!(priority_rank(Some(3)), 3);
+    }
+
+    #[test]
+    fn test_priority_rank_low() {
+        assert_eq!(priority_rank(Some(4)), 4);
+    }
+
+    #[test]
+    fn test_priority_rank_no_priority() {
+        assert_eq!(priority_rank(Some(0)), 5);
+    }
+
+    #[test]
+    fn test_priority_rank_none() {
+        assert_eq!(priority_rank(None), 5);
+    }
+
+    #[test]
+    fn test_priority_rank_out_of_range() {
+        assert_eq!(priority_rank(Some(99)), 5);
+        assert_eq!(priority_rank(Some(-1)), 5);
+    }
+}
