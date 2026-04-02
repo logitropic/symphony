@@ -108,10 +108,11 @@ impl WorkspaceManager {
         Ok(())
     }
 
-    pub fn run_after_run_hook(&self, workspace: &Path) {
+    pub fn run_after_run_hook(&self, workspace: &Path) -> Result<(), WorkspaceError> {
         if let Some(hook) = &self.hooks.after_run {
-            let _ = self.run_hook_best_effort(hook, workspace, "after_run");
+            return self.run_hook_best_effort(hook, workspace, "after_run");
         }
+        Ok(())
     }
 
     fn validate_workspace_path(&self, workspace_path: &Path) -> Result<(), WorkspaceError> {
@@ -144,6 +145,12 @@ impl WorkspaceManager {
         hook_name: &str,
     ) -> Result<(), WorkspaceError> {
         info!(workspace = %workspace.display(), hook = hook_name, "Running workspace hook");
+
+        // Security note: `script` is executed via `sh -lc` which interprets the script
+        // according to shell semantics. This is safe when `script` comes from trusted
+        // configuration (e.g., WORKFLOW.md YAML config controlled by operators), but could
+        // be a vector for command injection if `script` ever derives from user-controlled
+        // input. Ensure the WORKFLOW.md configuration is always from a trusted source.
 
         let output = Command::new("sh")
             .args(["-lc", script])

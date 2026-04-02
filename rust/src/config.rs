@@ -307,6 +307,8 @@ pub fn resolve_env_value(s: &str) -> String {
             if let Ok(val) = std::env::var(var_name) {
                 return format!("{}{}", val, path_suffix);
             }
+            // Variable not set - return literal string so config validation can catch it later
+            return s.to_string();
         } else {
             return std::env::var(rest).unwrap_or_else(|_| s.to_string());
         }

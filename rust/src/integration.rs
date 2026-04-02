@@ -246,36 +246,75 @@ impl LinearClient {
     }
 
     async fn graphql(&self, query: &str, variables: Value) -> Result<Value, LinearError> {
+        const MAX_RETRIES: u32 = 3;
+        const INITIAL_BACKOFF_MS: u64 = 100;
+
         let body = serde_json::json!({
             "query": query,
             "variables": variables
         });
 
-        let response = self
-            .client
-            .post(&self.endpoint)
-            .header("Authorization", format!("Bearer {}", &self.api_key))
-            .header("Content-Type", "application/json")
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| LinearError::ApiRequest(e.to_string()))?;
+        let mut last_error = None;
+        let mut backoff_ms = INITIAL_BACKOFF_MS;
 
-        let status = response.status();
-        if !status.is_success() {
-            return Err(LinearError::ApiStatus(status.as_u16() as i32));
+        for attempt in 0..MAX_RETRIES {
+            let response = match self
+                .client
+                .post(&self.endpoint)
+                .header("Authorization", format!("Bearer {}", &self.api_key))
+                .header("Content-Type", "application/json")
+                .json(&body)
+                .send()
+                .await
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    last_error = Some(LinearError::ApiRequest(e.to_string()));
+                    if attempt + 1 < MAX_RETRIES {
+                        tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
+                        backoff_ms *= 2;
+                        continue;
+                    }
+                    return Err(last_error.unwrap());
+                }
+            };
+
+            let status = response.status();
+            // Retry on rate limit (429) or server errors (5xx)
+            if status.as_u16() == 429 || status.is_server_error() {
+                if attempt + 1 < MAX_RETRIES {
+                    tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
+                    backoff_ms *= 2;
+                    // Reconstruct client for retry (reqwest doesn't support body reuse)
+                    let response_body: Result<Value, _> = response.json().await;
+                    if let Ok(body) = response_body {
+                        // We got a body even with error status - check if it's retryable
+                        if let Some(errors) = body.get("errors") {
+                            last_error = Some(LinearError::GraphQLErrors(errors.to_string()));
+                        }
+                    }
+                    continue;
+                }
+                return Err(LinearError::ApiStatus(status.as_u16() as i32));
+            }
+
+            if !status.is_success() {
+                return Err(LinearError::ApiStatus(status.as_u16() as i32));
+            }
+
+            let body: Value = response
+                .json()
+                .await
+                .map_err(|e| LinearError::ApiRequest(e.to_string()))?;
+
+            if let Some(errors) = body.get("errors") {
+                return Err(LinearError::GraphQLErrors(errors.to_string()));
+            }
+
+            return Ok(body);
         }
 
-        let body: Value = response
-            .json()
-            .await
-            .map_err(|e| LinearError::ApiRequest(e.to_string()))?;
-
-        if let Some(errors) = body.get("errors") {
-            return Err(LinearError::GraphQLErrors(errors.to_string()));
-        }
-
-        Ok(body)
+        Err(last_error.unwrap_or(LinearError::ApiRequest("Unknown error".to_string())))
     }
 
     fn normalize_issue(&self, data: &Value) -> Option<Issue> {

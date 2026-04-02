@@ -87,49 +87,75 @@ pub async fn run_http_server(port: u16, state: Arc<tokio::sync::Mutex<Orchestrat
     info!(port = port, "HTTP server listening on {}", addr);
 
     loop {
-        let (mut stream, _) = match listener.accept().await {
-            Ok(s) => s,
+        match listener.accept().await {
+            Ok((stream, _)) => {
+                let state = state.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = handle_connection(stream, &state).await {
+                        warn!(error = %e, "Connection handling error");
+                    }
+                });
+            }
             Err(e) => {
                 warn!("Failed to accept connection: {}", e);
                 continue;
             }
         };
-        let state = state.clone();
-
-        tokio::spawn(async move {
-            use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
-            let mut buf = vec![0u8; 4096];
-            let n = match stream.read(&mut buf).await {
-                Ok(0) => return,
-                Ok(n) => n,
-                Err(_) => return,
-            };
-
-            let request = String::from_utf8_lossy(&buf[..n]);
-            let lines: Vec<&str> = request.lines().collect();
-
-            let (method, path): (&str, &str) = if let Some(first) = lines.first() {
-                let parts: Vec<&str> = first.split_whitespace().collect();
-                (
-                    parts.first().copied().unwrap_or("GET"),
-                    parts.get(1).copied().unwrap_or("/"),
-                )
-            } else {
-                ("GET", "/")
-            };
-
-            let response = match (method, path) {
-                ("GET", "/") => get_dashboard(&state).await,
-                ("GET", "/api/v1/state") => get_state_json(&state).await,
-                ("POST", "/api/v1/refresh") => post_refresh(),
-                _ => not_found(),
-            };
-
-            let _ = stream.write_all(response.as_bytes()).await;
-            let _ = stream.shutdown().await;
-        });
     }
+}
+
+async fn handle_connection(
+    mut stream: tokio::net::TcpStream,
+    state: &Arc<tokio::sync::Mutex<OrchestratorRuntimeState>>,
+) -> Result<(), std::io::Error> {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+
+    // Read the full HTTP request (headers + body)
+    let mut buf = Vec::new();
+    let mut headers = [httparse::EMPTY_HEADER; 32];
+    let mut reader = tokio::io::BufReader::new(&mut stream);
+
+    // Parse request line and headers
+    let mut req = httparse::Request::new(&mut headers);
+    let bytes_read = reader.read_until(b'\n', &mut buf).await?;
+    if bytes_read == 0 {
+        return Ok(());
+    }
+
+    let req_start = String::from_utf8_lossy(&buf);
+    let req_start = req_start.trim_end_matches('\n');
+
+    // Handle empty request line (malformed)
+    if req_start.is_empty() {
+        return Ok(());
+    }
+
+    req.parse(req_start.as_bytes()).map_err(|_| {
+        std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid HTTP request")
+    })?;
+
+    let method = req.method.unwrap_or("GET");
+    let path = req.path.unwrap_or("/");
+
+    // Read any remaining headers
+    loop {
+        let mut header_buf = Vec::new();
+        reader.read_until(b'\n', &mut header_buf).await?;
+        if header_buf == b"\r\n" || header_buf == b"\n" || header_buf.is_empty() {
+            break;
+        }
+    }
+
+    let response = match (method, path) {
+        ("GET", "/") | ("GET", "/index.html") => get_dashboard(state).await,
+        ("GET", "/api/v1/state") => get_state_json(state).await,
+        ("POST", "/api/v1/refresh") => post_refresh(),
+        _ => not_found(),
+    };
+
+    stream.write_all(response.as_bytes()).await?;
+    stream.shutdown().await?;
+    Ok(())
 }
 
 async fn get_dashboard(state: &Arc<tokio::sync::Mutex<OrchestratorRuntimeState>>) -> String {

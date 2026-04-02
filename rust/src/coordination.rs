@@ -29,7 +29,6 @@ pub struct Orchestrator {
     config: ConfigSchema,
     tracker: LinearClient,
     workspace_manager: WorkspaceManager,
-    #[allow(dead_code)]
     codex_client: CodexClient,
     shutdown_rx: tokio::sync::watch::Receiver<bool>,
 }
@@ -91,7 +90,21 @@ impl Orchestrator {
         // Step 1: Reconcile running issues
         self.reconcile_running_issues().await?;
 
-        // Step 2: Validate dispatch config
+        // Step 2: Clean up expired retry entries
+        let now_ms = Utc::now().timestamp_millis();
+        let max_retry_backoff_ms = self.config.agent.max_retry_backoff_ms();
+        {
+            let mut state = self.state.lock().await;
+            // Remove retries that have passed their due time by a significant margin
+            // (they've either been dispatched already by should_dispatch, or should be discarded)
+            state.retry_attempts.retain(|_, retry| {
+                // Keep if not yet due, or if due but within the last max_backoff period
+                // This handles the case where should_dispatch removed the entry for dispatch
+                now_ms < retry.due_at_ms || (now_ms - retry.due_at_ms) < max_retry_backoff_ms
+            });
+        }
+
+        // Step 3: Validate dispatch config
         if let Err(e) = self.config.validate() {
             error!(error = %e, "Config validation failed, skipping dispatch");
             return Ok(());
@@ -179,24 +192,52 @@ impl Orchestrator {
 
         // Check for stalled runs
         let stall_timeout_ms = self.config.codex.stall_timeout_ms();
+        let max_retry_backoff_ms = self.config.agent.max_retry_backoff_ms();
         let now = Utc::now();
 
-        {
+        // Collect stalled issues to process after releasing lock
+        let stalled_entries: Vec<(String, RunningEntry, i32)> = {
             let state = self.state.lock().await;
-            for (issue_id, entry) in state.running.iter() {
-                if stall_timeout_ms <= 0 {
-                    continue;
-                }
+            state
+                .running
+                .iter()
+                .filter_map(|(issue_id, entry)| {
+                    if stall_timeout_ms <= 0 {
+                        return None;
+                    }
+                    let elapsed = entry
+                        .last_codex_timestamp
+                        .map(|ts| (now - ts).num_milliseconds())
+                        .unwrap_or_else(|| (now - entry.started_at).num_milliseconds());
 
-                let elapsed = entry
-                    .last_codex_timestamp
-                    .map(|ts| (now - ts).num_milliseconds())
-                    .unwrap_or_else(|| (now - entry.started_at).num_milliseconds());
+                    if elapsed > stall_timeout_ms {
+                        Some((issue_id.clone(), entry.clone(), entry.retry_attempt))
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        };
 
-                if elapsed > stall_timeout_ms {
-                    warn!(issue_id = %issue_id, elapsed_ms = elapsed, "Issue stalled, will retry");
-                }
-            }
+        // Process stalled issues outside the lock
+        for (issue_id, entry, retry_attempt) in stalled_entries {
+            warn!(issue_id = %issue_id, elapsed_ms = ?stall_timeout_ms, retry_attempt = %retry_attempt, "Issue stalled, scheduling retry");
+            let backoff_ms = std::cmp::min(
+                60_000 * 2_i64.pow(retry_attempt as u32),
+                max_retry_backoff_ms,
+            );
+            let retry_entry = crate::domain::RetryEntry {
+                attempt: retry_attempt + 1,
+                due_at_ms: now.timestamp_millis() + backoff_ms,
+                identifier: entry.identifier.clone(),
+                error: Some("Stalled (no activity)".to_string()),
+                worker_host: entry.worker_host.clone(),
+                workspace_path: entry.workspace_path.clone(),
+            };
+            let mut state = self.state.lock().await;
+            state.running.remove(&issue_id);
+            state.claimed.remove(&issue_id);
+            state.retry_attempts.insert(issue_id.clone(), retry_entry);
         }
 
         // Fetch current issue states
@@ -275,7 +316,7 @@ impl Orchestrator {
             return false;
         }
 
-        let state = self.state.lock().await;
+        let mut state = self.state.lock().await;
 
         // Not already running
         if state.running.contains_key(issue.id.as_ref().unwrap()) {
@@ -285,6 +326,18 @@ impl Orchestrator {
         // Not already claimed
         if state.claimed.contains(issue.id.as_ref().unwrap()) {
             return false;
+        }
+
+        // Check if issue is in retry backoff period
+        let issue_id_str = issue.id.as_ref().unwrap();
+        if let Some(due_at_ms) = state.retry_attempts.get(issue_id_str).map(|r| r.due_at_ms) {
+            let now_ms = Utc::now().timestamp_millis();
+            if now_ms < due_at_ms {
+                // Still in backoff period
+                return false;
+            }
+            // Backoff elapsed - remove from retry_attempts so it can be re-dispatched
+            state.retry_attempts.remove(issue_id_str);
         }
 
         // Check active/terminal states
@@ -480,7 +533,10 @@ async fn run_worker(
     let turn_result = tokio::time::timeout(
         std::time::Duration::from_millis(turn_timeout_ms as u64),
         codex_client.run_turn(&session, &prompt, &issue, move |msg| {
-            // Update state with Codex events
+            // Note: blocking_lock() is safe here because:
+            // 1. This callback is invoked synchronously from within a spawned async task
+            // 2. The callback runs in the context of the spawned task, not the main tokio runtime
+            // 3. Using blocking_lock() in a spawned task avoids poisoning the async lock
             if let Some(content) = msg.get("content").and_then(|c| c.as_str()) {
                 let mut state_guard = cb_state.blocking_lock();
                 if let Some(entry) = state_guard.running.get_mut(&cb_issue_id) {
@@ -605,7 +661,9 @@ async fn cleanup_worker(
     let workspace_key = crate::domain::sanitize_identifier(identifier);
     let workspace_root = &workspace_manager.workspace_root();
     let workspace_path = workspace_root.join(&workspace_key);
-    workspace_manager.run_after_run_hook(&workspace_path);
+    if let Err(e) = workspace_manager.run_after_run_hook(&workspace_path) {
+        error!(issue_id = %issue_id, error = %e, "After_run hook failed");
+    }
 
     info!(issue_id = %issue_id, "Worker cleanup complete");
 }

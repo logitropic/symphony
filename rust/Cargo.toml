@@ -16,6 +16,7 @@ thiserror = "2"
 anyhow = "1"
 liquid = "0.26"
 chrono = { version = "0.4", features = ["serde"] }
+httparse = "1"
 
 [lib]
 path = "src/lib.rs"
