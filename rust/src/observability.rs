@@ -1,8 +1,17 @@
 use crate::domain::{OrchestratorRuntimeState, TokenTotals};
+use axum::{
+    extract::State,
+    response::{Html, Json},
+    routing::{get, post},
+    Router,
+};
 use serde::Serialize;
 use serde_json::Value;
 use std::sync::Arc;
 use thiserror::Error;
+use tokio::net::TcpListener;
+use tokio::sync::Mutex;
+use tower_http::trace::TraceLayer;
 use tracing::{info, warn};
 
 #[derive(Error, Debug)]
@@ -61,6 +70,11 @@ pub struct PollingState {
     pub poll_interval_ms: i64,
 }
 
+#[derive(Clone)]
+struct AppState {
+    runtime: Arc<Mutex<OrchestratorRuntimeState>>,
+}
+
 pub fn init_logging() {
     use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
@@ -72,8 +86,16 @@ pub fn init_logging() {
         .init();
 }
 
-pub async fn run_http_server(port: u16, state: Arc<tokio::sync::Mutex<OrchestratorRuntimeState>>) {
-    use tokio::net::TcpListener;
+pub async fn run_http_server(port: u16, state: Arc<Mutex<OrchestratorRuntimeState>>) {
+    let app_state = AppState { runtime: state };
+
+    let app = Router::new()
+        .route("/", get(dashboard_handler))
+        .route("/index.html", get(dashboard_handler))
+        .route("/api/v1/state", get(state_handler))
+        .route("/api/v1/refresh", post(refresh_handler))
+        .layer(TraceLayer::new_for_http())
+        .with_state(app_state);
 
     let addr = format!("127.0.0.1:{}", port);
     let listener = match TcpListener::bind(&addr).await {
@@ -86,84 +108,14 @@ pub async fn run_http_server(port: u16, state: Arc<tokio::sync::Mutex<Orchestrat
 
     info!(port = port, "HTTP server listening on {}", addr);
 
-    loop {
-        match listener.accept().await {
-            Ok((stream, _)) => {
-                let state = state.clone();
-                tokio::spawn(async move {
-                    if let Err(e) = handle_connection(stream, &state).await {
-                        warn!(error = %e, "Connection handling error");
-                    }
-                });
-            }
-            Err(e) => {
-                warn!("Failed to accept connection: {}", e);
-                continue;
-            }
-        };
-    }
+    axum::serve(listener, app).await.expect("Server error");
 }
 
-async fn handle_connection(
-    mut stream: tokio::net::TcpStream,
-    state: &Arc<tokio::sync::Mutex<OrchestratorRuntimeState>>,
-) -> Result<(), std::io::Error> {
-    use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
-
-    // Read the full HTTP request (headers + body)
-    let mut buf = Vec::new();
-    let mut headers = [httparse::EMPTY_HEADER; 32];
-    let mut reader = tokio::io::BufReader::new(&mut stream);
-
-    // Parse request line and headers
-    let mut req = httparse::Request::new(&mut headers);
-    let bytes_read = reader.read_until(b'\n', &mut buf).await?;
-    if bytes_read == 0 {
-        return Ok(());
-    }
-
-    let req_start = String::from_utf8_lossy(&buf);
-    let req_start = req_start.trim_end_matches('\n');
-
-    // Handle empty request line (malformed)
-    if req_start.is_empty() {
-        return Ok(());
-    }
-
-    req.parse(req_start.as_bytes()).map_err(|_| {
-        std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid HTTP request")
-    })?;
-
-    let method = req.method.unwrap_or("GET");
-    let path = req.path.unwrap_or("/");
-
-    // Read any remaining headers
-    loop {
-        let mut header_buf = Vec::new();
-        reader.read_until(b'\n', &mut header_buf).await?;
-        if header_buf == b"\r\n" || header_buf == b"\n" || header_buf.is_empty() {
-            break;
-        }
-    }
-
-    let response = match (method, path) {
-        ("GET", "/") | ("GET", "/index.html") => get_dashboard(state).await,
-        ("GET", "/api/v1/state") => get_state_json(state).await,
-        ("POST", "/api/v1/refresh") => post_refresh(),
-        _ => not_found(),
-    };
-
-    stream.write_all(response.as_bytes()).await?;
-    stream.shutdown().await?;
-    Ok(())
-}
-
-async fn get_dashboard(state: &Arc<tokio::sync::Mutex<OrchestratorRuntimeState>>) -> String {
-    let state = state.lock().await;
-
-    let running_count = state.running.len();
-    let retrying_count = state.retry_attempts.len();
-    let total_tokens = state.codex_totals.total_tokens;
+async fn dashboard_handler(State(state): State<AppState>) -> Html<String> {
+    let runtime = state.runtime.lock().await;
+    let running_count = runtime.running.len();
+    let retrying_count = runtime.retry_attempts.len();
+    let total_tokens = runtime.codex_totals.total_tokens;
 
     let body = format!(
         r#"<!DOCTYPE html>
@@ -177,18 +129,14 @@ async fn get_dashboard(state: &Arc<tokio::sync::Mutex<OrchestratorRuntimeState>>
         running_count, retrying_count, total_tokens
     );
 
-    format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-        body.len(),
-        body
-    )
+    Html(body)
 }
 
-async fn get_state_json(state: &Arc<tokio::sync::Mutex<OrchestratorRuntimeState>>) -> String {
-    let state = state.lock().await;
+async fn state_handler(State(state): State<AppState>) -> Json<RuntimeSnapshot> {
+    let runtime = state.runtime.lock().await;
 
     let snapshot = RuntimeSnapshot {
-        running: state
+        running: runtime
             .running
             .values()
             .map(|entry| RunningSessionRow {
@@ -211,7 +159,7 @@ async fn get_state_json(state: &Arc<tokio::sync::Mutex<OrchestratorRuntimeState>
                 },
             })
             .collect(),
-        retrying: state
+        retrying: runtime
             .retry_attempts
             .iter()
             .map(
@@ -224,37 +172,104 @@ async fn get_state_json(state: &Arc<tokio::sync::Mutex<OrchestratorRuntimeState>
                 },
             )
             .collect(),
-        codex_totals: state.codex_totals.clone(),
-        rate_limits: state.codex_rate_limits.clone(),
+        codex_totals: runtime.codex_totals.clone(),
+        rate_limits: runtime.codex_rate_limits.clone(),
         polling: PollingState {
             checking: false,
             next_poll_in_ms: None,
-            poll_interval_ms: state.poll_interval_ms,
+            poll_interval_ms: runtime.poll_interval_ms,
         },
     };
 
-    let body = serde_json::to_string(&snapshot).unwrap_or_else(|_| "{}".to_string());
-    format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-        body.len(),
-        body
-    )
+    Json(snapshot)
 }
 
-fn post_refresh() -> String {
-    let body = r#"{"queued":true}"#;
-    format!(
-        "HTTP/1.1 202 Accepted\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-        body.len(),
-        body
-    )
+async fn refresh_handler() -> Json<serde_json::Value> {
+    Json(serde_json::json!({ "queued": true }))
 }
 
-fn not_found() -> String {
-    let body = r#"{"error":"not_found"}"#;
-    format!(
-        "HTTP/1.1 404 Not Found\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-        body.len(),
-        body
-    )
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::{Issue, OrchestratorRuntimeState, RunningEntry};
+    use chrono::Utc;
+
+    fn create_test_state() -> OrchestratorRuntimeState {
+        let issue = Issue {
+            id: Some("TEST-1".to_string()),
+            identifier: Some("TEST-1".to_string()),
+            title: Some("Test Issue".to_string()),
+            description: Some("A test issue".to_string()),
+            priority: Some(2),
+            state: Some("In Progress".to_string()),
+            branch_name: Some("issue/TEST-1".to_string()),
+            url: Some("https://linear.app/test/TEST-1".to_string()),
+            assignee_id: None,
+            labels: vec![],
+            blocked_by: vec![],
+            assigned_to_worker: true,
+            created_at: Some(Utc::now()),
+            updated_at: Some(Utc::now()),
+        };
+
+        let running_entry = RunningEntry {
+            pid: 1234,
+            identifier: "TEST-1".to_string(),
+            issue,
+            worker_host: None,
+            workspace_path: Some("/tmp/workspace/test-1".to_string()),
+            session_id: Some("session-abc".to_string()),
+            last_codex_message: Some("Working on it".to_string()),
+            last_codex_timestamp: Some(Utc::now()),
+            last_codex_event: None,
+            codex_app_server_pid: None,
+            codex_input_tokens: 100,
+            codex_output_tokens: 200,
+            codex_total_tokens: 300,
+            codex_last_reported_input_tokens: 100,
+            codex_last_reported_output_tokens: 200,
+            codex_last_reported_total_tokens: 300,
+            turn_count: 5,
+            retry_attempt: 0,
+            started_at: Utc::now(),
+        };
+
+        let mut state = OrchestratorRuntimeState::default();
+        state.running.insert("TEST-1".to_string(), running_entry);
+        state.poll_interval_ms = 30_000;
+        state.max_concurrent_agents = 10;
+        state
+    }
+
+    #[tokio::test]
+    async fn test_dashboard_handler() {
+        let state = create_test_state();
+        let app_state = AppState {
+            runtime: Arc::new(Mutex::new(state)),
+        };
+
+        let response = dashboard_handler(State(app_state)).await;
+        assert!(response.0.contains("Running: 1"));
+        assert!(response.0.contains("Retrying: 0"));
+    }
+
+    #[tokio::test]
+    async fn test_state_handler() {
+        let state = create_test_state();
+        let app_state = AppState {
+            runtime: Arc::new(Mutex::new(state)),
+        };
+
+        let response = state_handler(State(app_state)).await;
+        assert_eq!(response.running.len(), 1);
+        assert_eq!(response.running[0].identifier, "TEST-1");
+        assert_eq!(response.running[0].turn_count, 5);
+        assert_eq!(response.polling.poll_interval_ms, 30_000);
+    }
+
+    #[tokio::test]
+    async fn test_refresh_handler() {
+        let response = refresh_handler().await;
+        assert_eq!(response.0.get("queued"), Some(&serde_json::json!(true)));
+    }
 }

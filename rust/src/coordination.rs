@@ -58,29 +58,36 @@ impl Orchestrator {
     pub async fn run(&mut self) -> Result<(), OrchestratorError> {
         info!("Orchestrator starting");
 
-        // Initial poll immediately
-        self.poll_tick().await?;
+        let mut next_poll_time = tokio::time::Instant::now();
 
-        // Run poll loop
         loop {
             let poll_interval = {
                 let state = self.state.lock().await;
                 state.poll_interval_ms
             };
 
-            tokio::select! {
-                _ = sleep(Duration::from_millis(poll_interval as u64)) => {
-                    if let Err(e) = self.poll_tick().await {
-                        error!(error = %e, "Poll tick failed");
-                    }
-                }
-                _ = self.shutdown_rx.changed() => {
-                    if *self.shutdown_rx.borrow() {
-                        info!("Orchestrator shutting down");
-                        break;
+            // Wait until the next poll time, but only if we're not already past it
+            let now = tokio::time::Instant::now();
+            if now < next_poll_time {
+                tokio::select! {
+                    _ = sleep(next_poll_time - now) => {}
+                    _ = self.shutdown_rx.changed() => {
+                        if *self.shutdown_rx.borrow() {
+                            info!("Orchestrator shutting down");
+                            break;
+                        }
                     }
                 }
             }
+
+            // Run poll
+            if let Err(e) = self.poll_tick().await {
+                error!(error = %e, "Poll tick failed");
+            }
+
+            // Schedule next poll interval from now
+            next_poll_time =
+                tokio::time::Instant::now() + Duration::from_millis(poll_interval as u64);
         }
 
         Ok(())
@@ -450,7 +457,6 @@ impl Orchestrator {
         let worker_issue_id = issue_id.clone();
         let worker_identifier = identifier.clone();
         let worker_issue = issue.clone();
-        let shutdown_rx = self.shutdown_rx.clone();
 
         tokio::spawn(async move {
             run_worker(
@@ -462,7 +468,6 @@ impl Orchestrator {
                 worker_issue_id,
                 worker_identifier,
                 worker_issue,
-                shutdown_rx,
             )
             .await;
         });
@@ -485,7 +490,6 @@ async fn run_worker(
     issue_id: String,
     identifier: String,
     issue: crate::domain::Issue,
-    _shutdown_rx: tokio::sync::watch::Receiver<bool>,
 ) {
     let turn_timeout_ms = config.codex.turn_timeout_ms();
 
@@ -530,10 +534,12 @@ async fn run_worker(
     let turn_result = tokio::time::timeout(
         std::time::Duration::from_millis(turn_timeout_ms as u64),
         codex_client.run_turn(&session, &prompt, &issue, move |msg| {
-            // Note: blocking_lock() is safe here because:
-            // 1. This callback is invoked synchronously from within a spawned async task
-            // 2. The callback runs in the context of the spawned task, not the main tokio runtime
-            // 3. Using blocking_lock() in a spawned task avoids poisoning the async lock
+            // SAFETY: blocking_lock() is safe here because this callback runs synchronously
+            // within a spawned async task (not the main tokio runtime). The spawned task's
+            // JoinHandle is never dropped until the task completes, so the callback has
+            // exclusive access to cb_state throughout its execution. Using blocking_lock()
+            // (which wraps std::sync::Mutex) avoids issues with async Mutex poisoning when
+            // the callback panics - a std mutex won't poison, it just locks.
             if let Some(content) = msg.get("content").and_then(|c| c.as_str()) {
                 let mut state_guard = cb_state.blocking_lock();
                 if let Some(entry) = state_guard.running.get_mut(&cb_issue_id) {

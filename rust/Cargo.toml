@@ -14,9 +14,10 @@ tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
 tempfile = "3"
 thiserror = "2"
 anyhow = "1"
-liquid = "0.26"
 chrono = { version = "0.4", features = ["serde"] }
-httparse = "1"
+axum = "0.8"
+tower = "0.5"
+tower-http = { version = "0.6", features = ["trace"] }
 
 [lib]
 path = "src/lib.rs"

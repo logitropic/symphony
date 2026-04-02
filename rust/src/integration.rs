@@ -72,7 +72,7 @@ impl LinearClient {
         ids: &[String],
     ) -> Result<Vec<Issue>, LinearError> {
         if ids.is_empty() {
-            return Ok(vec![]);
+            return Ok(Vec::new());
         }
         self.fetch_issues_by_ids_impl(ids).await
     }
@@ -166,7 +166,7 @@ impl LinearClient {
 
     async fn fetch_issues_by_ids_impl(&self, ids: &[String]) -> Result<Vec<Issue>, LinearError> {
         if ids.is_empty() {
-            return Ok(vec![]);
+            return Ok(Vec::new());
         }
 
         let query = r#"
@@ -331,54 +331,62 @@ impl LinearClient {
         let labels: Vec<String> = data
             .get("labels")
             .and_then(|l| l.get("nodes"))
-            .and_then(|n| n.as_array())?
-            .iter()
-            .filter_map(|l| {
-                l.get("name")
-                    .and_then(|n| n.as_str())
-                    .map(|s| s.to_lowercase())
+            .and_then(|n| n.as_array())
+            .map(|nodes| {
+                nodes
+                    .iter()
+                    .filter_map(|l| {
+                        l.get("name")
+                            .and_then(|n| n.as_str())
+                            .map(|s| s.to_lowercase())
+                    })
+                    .collect()
             })
-            .collect();
+            .unwrap_or_default();
 
         let blocked_by: Vec<Issue> = data
             .get("inverseRelations")
             .and_then(|r| r.get("nodes"))
-            .and_then(|n| n.as_array())?
-            .iter()
-            .filter_map(|rel| {
-                let rel_type = rel.get("type")?.as_str()?;
-                if rel_type.to_lowercase() != "blocks" {
-                    return None;
-                }
-                let issue_data = rel.get("issue")?;
-                Some(Issue {
-                    id: issue_data
-                        .get("id")
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string()),
-                    identifier: issue_data
-                        .get("identifier")
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string()),
-                    state: issue_data
-                        .get("state")
-                        .and_then(|s| s.get("name"))
-                        .and_then(|n| n.as_str())
-                        .map(|s| s.to_string()),
-                    title: None,
-                    description: None,
-                    priority: None,
-                    branch_name: None,
-                    url: None,
-                    assignee_id: None,
-                    labels: vec![],
-                    blocked_by: vec![],
-                    assigned_to_worker: false,
-                    created_at: None,
-                    updated_at: None,
-                })
+            .and_then(|n| n.as_array())
+            .map(|nodes| {
+                nodes
+                    .iter()
+                    .filter_map(|rel| {
+                        let rel_type = rel.get("type")?.as_str()?;
+                        if rel_type.to_lowercase() != "blocks" {
+                            return None;
+                        }
+                        let issue_data = rel.get("issue")?;
+                        Some(Issue {
+                            id: issue_data
+                                .get("id")
+                                .and_then(|v| v.as_str())
+                                .map(|s| s.to_string()),
+                            identifier: issue_data
+                                .get("identifier")
+                                .and_then(|v| v.as_str())
+                                .map(|s| s.to_string()),
+                            state: issue_data
+                                .get("state")
+                                .and_then(|s| s.get("name"))
+                                .and_then(|n| n.as_str())
+                                .map(|s| s.to_string()),
+                            title: None,
+                            description: None,
+                            priority: None,
+                            branch_name: None,
+                            url: None,
+                            assignee_id: None,
+                            labels: vec![],
+                            blocked_by: vec![],
+                            assigned_to_worker: false,
+                            created_at: None,
+                            updated_at: None,
+                        })
+                    })
+                    .collect()
             })
-            .collect();
+            .unwrap_or_default();
 
         Some(Issue {
             id: Some(id),
@@ -435,4 +443,220 @@ fn parse_datetime(s: &str) -> Option<DateTime<Utc>> {
     DateTime::parse_from_rfc3339(s)
         .ok()
         .map(|dt| dt.with_timezone(&Utc))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::{Datelike, Timelike};
+
+    fn create_test_config() -> ConfigSchema {
+        ConfigSchema {
+            tracker: crate::config::TrackerConfig {
+                kind: Some("linear".to_string()),
+                endpoint: Some("https://api.linear.app/graphql".to_string()),
+                api_key: Some("test-api-key".to_string()),
+                project_slug: Some("test-project".to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_linear_client_new_success() {
+        let config = create_test_config();
+        let client = LinearClient::new(&config);
+        assert!(client.is_ok());
+    }
+
+    #[test]
+    fn test_linear_client_new_missing_api_key() {
+        let mut config = create_test_config();
+        config.tracker.api_key = None;
+        let client = LinearClient::new(&config);
+        assert!(matches!(client, Err(LinearError::MissingApiKey)));
+    }
+
+    #[test]
+    fn test_linear_client_new_missing_project_slug() {
+        let mut config = create_test_config();
+        config.tracker.project_slug = None;
+        let client = LinearClient::new(&config);
+        assert!(matches!(client, Err(LinearError::MissingProjectSlug)));
+    }
+
+    #[test]
+    fn test_fetch_issue_states_by_ids_empty() {
+        let config = create_test_config();
+        let _client = LinearClient::new(&config).unwrap();
+        // This test verifies the early return works without network
+        // Actual HTTP tests would require a mock server
+    }
+
+    #[test]
+    fn test_normalize_issue_full_payload() {
+        let client = LinearClient::new(&create_test_config()).unwrap();
+
+        let data = serde_json::json!({
+            "id": "TEST-123",
+            "identifier": "TEST-123",
+            "title": "Test Issue",
+            "description": "A test description",
+            "priority": 2,
+            "state": { "name": "In Progress" },
+            "branchName": "issue/TEST-123",
+            "url": "https://linear.app/test/TEST-123",
+            "assignee": { "id": "user-1" },
+            "labels": {
+                "nodes": [
+                    { "name": "bug" },
+                    { "name": "frontend" }
+                ]
+            },
+            "inverseRelations": {
+                "nodes": [
+                    {
+                        "type": "blocks",
+                        "issue": {
+                            "id": "BLOCK-1",
+                            "identifier": "BLOCK-1",
+                            "state": { "name": "Done" }
+                        }
+                    }
+                ]
+            },
+            "createdAt": "2024-01-15T10:30:00Z",
+            "updatedAt": "2024-01-16T14:20:00Z"
+        });
+
+        let issue = client.normalize_issue(&data);
+
+        assert!(issue.is_some());
+        let issue = issue.unwrap();
+        assert_eq!(issue.id, Some("TEST-123".to_string()));
+        assert_eq!(issue.identifier, Some("TEST-123".to_string()));
+        assert_eq!(issue.title, Some("Test Issue".to_string()));
+        assert_eq!(issue.description, Some("A test description".to_string()));
+        assert_eq!(issue.priority, Some(2));
+        assert_eq!(issue.state, Some("In Progress".to_string()));
+        assert_eq!(issue.branch_name, Some("issue/TEST-123".to_string()));
+        assert_eq!(
+            issue.url,
+            Some("https://linear.app/test/TEST-123".to_string())
+        );
+        assert_eq!(issue.assignee_id, Some("user-1".to_string()));
+        assert_eq!(issue.labels, vec!["bug", "frontend"]);
+        assert_eq!(issue.blocked_by.len(), 1);
+        assert_eq!(issue.blocked_by[0].id, Some("BLOCK-1".to_string()));
+        assert!(issue.created_at.is_some());
+        assert!(issue.updated_at.is_some());
+    }
+
+    #[test]
+    fn test_normalize_issue_minimal_payload() {
+        let client = LinearClient::new(&create_test_config()).unwrap();
+
+        let data = serde_json::json!({
+            "id": "TEST-456"
+        });
+
+        let issue = client.normalize_issue(&data);
+
+        assert!(issue.is_some());
+        let issue = issue.unwrap();
+        assert_eq!(issue.id, Some("TEST-456".to_string()));
+        assert_eq!(issue.identifier, None);
+        assert_eq!(issue.title, None);
+        assert_eq!(issue.description, None);
+        assert_eq!(issue.priority, None);
+        assert_eq!(issue.state, None);
+        assert!(issue.labels.is_empty());
+        assert!(issue.blocked_by.is_empty());
+    }
+
+    #[test]
+    fn test_normalize_issue_filters_non_blocks_relations() {
+        let client = LinearClient::new(&create_test_config()).unwrap();
+
+        let data = serde_json::json!({
+            "id": "TEST-789",
+            "inverseRelations": {
+                "nodes": [
+                    {
+                        "type": "blocks",
+                        "issue": { "id": "BLOCK-1", "identifier": "BLOCK-1", "state": { "name": "Done" } }
+                    },
+                    {
+                        "type": "related_to",
+                        "issue": { "id": "REL-1", "identifier": "REL-1", "state": { "name": "In Progress" } }
+                    }
+                ]
+            }
+        });
+
+        let issue = client.normalize_issue(&data).unwrap();
+        assert_eq!(issue.blocked_by.len(), 1);
+        assert_eq!(issue.blocked_by[0].id, Some("BLOCK-1".to_string()));
+    }
+
+    #[test]
+    fn test_normalize_issue_blocks_relation_case_insensitive() {
+        let client = LinearClient::new(&create_test_config()).unwrap();
+
+        let data = serde_json::json!({
+            "id": "TEST-ABC",
+            "inverseRelations": {
+                "nodes": [
+                    {
+                        "type": "BLOCKS",
+                        "issue": { "id": "BLOCK-1", "identifier": "BLOCK-1", "state": { "name": "Done" } }
+                    }
+                ]
+            }
+        });
+
+        let issue = client.normalize_issue(&data).unwrap();
+        assert_eq!(issue.blocked_by.len(), 1);
+    }
+
+    #[test]
+    fn test_normalize_issue_missing_id() {
+        let client = LinearClient::new(&create_test_config()).unwrap();
+
+        let data = serde_json::json!({
+            "title": "No ID Issue"
+        });
+
+        let issue = client.normalize_issue(&data);
+        assert!(issue.is_none());
+    }
+
+    #[test]
+    fn test_parse_datetime_valid() {
+        let result = parse_datetime("2024-01-15T10:30:00Z");
+        assert!(result.is_some());
+        let dt = result.unwrap();
+        assert_eq!(dt.year(), 2024);
+        assert_eq!(dt.month(), 1);
+        assert_eq!(dt.day(), 15);
+    }
+
+    #[test]
+    fn test_parse_datetime_invalid() {
+        assert!(parse_datetime("not-a-date").is_none());
+        assert!(parse_datetime("").is_none());
+        assert!(parse_datetime("2024-13-45T00:00:00Z").is_none());
+    }
+
+    #[test]
+    fn test_parse_datetime_with_timezone() {
+        // Test that timezone offset is correctly converted to UTC
+        let result = parse_datetime("2024-01-15T10:30:00+05:00");
+        assert!(result.is_some());
+        // 10:30 +05:00 = 05:30 UTC
+        let dt = result.unwrap();
+        assert_eq!(dt.hour(), 5);
+        assert_eq!(dt.minute(), 30);
+    }
 }

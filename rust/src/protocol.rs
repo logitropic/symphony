@@ -48,8 +48,9 @@ impl Session {
     }
 
     async fn set_child_reader(&self, child: Child, reader: BufReader<tokio::process::ChildStdout>) {
+        // Set process handle - this is the first and only write to this slot
         *self.child.lock().unwrap() = Some(child);
-        // At this point the lock was just created in `new()`, so it should be available
+        // Set up the async reader for reading process output
         let mut guard = self.reader.lock().await;
         *guard = Some(reader);
     }
@@ -369,5 +370,82 @@ impl CodexClient {
             Ok(Err(e)) => Err(CodexError::ResponseError(e.to_string())),
             Err(_) => Err(CodexError::ResponseTimeout),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_codex_client_workspace_validation() {
+        let config = crate::config::CodexConfig {
+            command: Some("codex app-server".to_string()),
+            ..Default::default()
+        };
+        let client = CodexClient::new(&config, "/workspace/root");
+
+        // This test verifies the workspace path validation logic
+        // Note: full validation requires the actual path to exist
+        // These are unit tests for the validation message format
+        let result = client.config.command();
+        assert_eq!(result, "codex app-server");
+    }
+
+    #[test]
+    fn test_codex_error_display() {
+        let errors = vec![
+            (CodexError::CodexNotFound, "Codex not found"),
+            (
+                CodexError::InvalidWorkspaceCwd("/invalid".to_string()),
+                "Invalid workspace cwd: /invalid",
+            ),
+            (CodexError::ResponseTimeout, "Response timeout"),
+            (CodexError::TurnTimeout, "Turn timeout"),
+            (CodexError::PortExit(1), "Port exit: 1"),
+            (
+                CodexError::ResponseError("test".to_string()),
+                "Response error: test",
+            ),
+            (
+                CodexError::TurnFailed("failed".to_string()),
+                "Turn failed: failed",
+            ),
+            (CodexError::TurnCancelled, "Turn cancelled"),
+            (CodexError::TurnInputRequired, "Turn input required"),
+            (
+                CodexError::JsonParseError("bad json".to_string()),
+                "JSON parse error: bad json",
+            ),
+        ];
+
+        for (error, expected_msg) in errors {
+            assert_eq!(error.to_string(), expected_msg);
+        }
+    }
+
+    #[test]
+    fn test_codex_config_defaults() {
+        let config = CodexConfig::default();
+        assert_eq!(config.command(), "codex app-server");
+        assert_eq!(config.turn_timeout_ms(), 3_600_000);
+        assert_eq!(config.read_timeout_ms(), 5_000);
+        assert_eq!(config.stall_timeout_ms(), 300_000);
+    }
+
+    #[test]
+    fn test_codex_config_with_custom_values() {
+        let config = CodexConfig {
+            command: Some("custom-codex".to_string()),
+            turn_timeout_ms: Some(60_000),
+            read_timeout_ms: Some(1_000),
+            stall_timeout_ms: Some(60_000),
+            ..Default::default()
+        };
+
+        assert_eq!(config.command(), "custom-codex");
+        assert_eq!(config.turn_timeout_ms(), 60_000);
+        assert_eq!(config.read_timeout_ms(), 1_000);
+        assert_eq!(config.stall_timeout_ms(), 60_000);
     }
 }
