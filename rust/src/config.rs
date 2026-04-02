@@ -38,13 +38,25 @@ pub struct TrackerConfig {
 
 impl TrackerConfig {
     pub fn endpoint(&self) -> String {
-        self.endpoint.clone().unwrap_or_else(|| "https://api.linear.app/graphql".to_string())
+        self.endpoint
+            .clone()
+            .unwrap_or_else(|| "https://api.linear.app/graphql".to_string())
     }
     pub fn active_states(&self) -> Vec<String> {
-        self.active_states.clone().unwrap_or_else(|| vec!["Todo".to_string(), "In Progress".to_string()])
+        self.active_states
+            .clone()
+            .unwrap_or_else(|| vec!["Todo".to_string(), "In Progress".to_string()])
     }
     pub fn terminal_states(&self) -> Vec<String> {
-        self.terminal_states.clone().unwrap_or_else(|| vec!["Closed".to_string(), "Cancelled".to_string(), "Canceled".to_string(), "Duplicate".to_string(), "Done".to_string()])
+        self.terminal_states.clone().unwrap_or_else(|| {
+            vec![
+                "Closed".to_string(),
+                "Cancelled".to_string(),
+                "Canceled".to_string(),
+                "Duplicate".to_string(),
+                "Done".to_string(),
+            ]
+        })
     }
 }
 
@@ -69,7 +81,7 @@ impl WorkspaceConfig {
         self.root
             .as_ref()
             .map(|s| expand_path(s))
-            .unwrap_or_else(|| PathBuf::from(std::env::temp_dir()).join("symphony_workspaces"))
+            .unwrap_or_else(|| std::env::temp_dir().join("symphony_workspaces"))
     }
 }
 
@@ -112,7 +124,9 @@ pub struct CodexConfig {
 
 impl CodexConfig {
     pub fn command(&self) -> String {
-        self.command.clone().unwrap_or_else(|| "codex app-server".to_string())
+        self.command
+            .clone()
+            .unwrap_or_else(|| "codex app-server".to_string())
     }
     pub fn turn_timeout_ms(&self) -> i64 {
         self.turn_timeout_ms.unwrap_or(3_600_000)
@@ -159,7 +173,7 @@ pub struct ObservabilityConfig {
     pub render_interval_ms: Option<i64>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ConfigSchema {
     pub tracker: TrackerConfig,
     pub polling: PollingConfig,
@@ -170,22 +184,6 @@ pub struct ConfigSchema {
     pub hooks: HooksConfig,
     pub server: ServerConfig,
     pub observability: ObservabilityConfig,
-}
-
-impl Default for ConfigSchema {
-    fn default() -> Self {
-        Self {
-            tracker: TrackerConfig::default(),
-            polling: PollingConfig::default(),
-            workspace: WorkspaceConfig::default(),
-            worker: WorkerConfig::default(),
-            agent: AgentConfig::default(),
-            codex: CodexConfig::default(),
-            hooks: HooksConfig::default(),
-            server: ServerConfig::default(),
-            observability: ObservabilityConfig::default(),
-        }
-    }
 }
 
 impl ConfigSchema {
@@ -216,7 +214,10 @@ impl ConfigSchema {
     pub fn validate(&self) -> Result<(), ConfigError> {
         let tracker = &self.tracker;
 
-        let kind = tracker.kind.as_ref().ok_or(ConfigError::MissingTrackerKind)?;
+        let kind = tracker
+            .kind
+            .as_ref()
+            .ok_or(ConfigError::MissingTrackerKind)?;
         if kind != "linear" {
             return Err(ConfigError::UnsupportedTrackerKind(kind.clone()));
         }
@@ -264,7 +265,9 @@ impl Workflow {
             (vec![], lines)
         };
 
-        let config = if front_matter_lines.is_empty() || front_matter_lines.iter().all(|l| l.trim().is_empty()) {
+        let config = if front_matter_lines.is_empty()
+            || front_matter_lines.iter().all(|l| l.trim().is_empty())
+        {
             serde_yaml::Value::Mapping(serde_yaml::Mapping::new())
         } else {
             let yaml_str = front_matter_lines.join("\n");
@@ -278,15 +281,17 @@ impl Workflow {
 
         let prompt_template = prompt_lines.join("\n").trim().to_string();
 
-        Ok(Self { config, prompt_template })
+        Ok(Self {
+            config,
+            prompt_template,
+        })
     }
 }
 
 pub fn expand_path(s: &str) -> PathBuf {
     let s = resolve_env_value(s);
-    if s.starts_with('~') {
+    if let Some(rest) = s.strip_prefix('~') {
         if let Ok(home) = std::env::var("HOME") {
-            let rest = &s[1..];
             return PathBuf::from(home).join(rest);
         }
     }
@@ -294,9 +299,8 @@ pub fn expand_path(s: &str) -> PathBuf {
 }
 
 pub fn resolve_env_value(s: &str) -> String {
-    if s.starts_with('$') {
+    if let Some(rest) = s.strip_prefix('$') {
         // Find where the var name ends (at / or end of string)
-        let rest = &s[1..];
         if let Some(pos) = rest.find('/') {
             let var_name = &rest[..pos];
             let path_suffix = &rest[pos..];
@@ -345,7 +349,10 @@ This is the prompt."#;
         let workflow = Workflow::parse(content).unwrap();
         assert!(workflow.config.is_mapping());
         assert!(workflow.config.as_mapping().unwrap().is_empty());
-        assert_eq!(workflow.prompt_template, "Just a prompt without any frontmatter.");
+        assert_eq!(
+            workflow.prompt_template,
+            "Just a prompt without any frontmatter."
+        );
     }
 
     #[test]
@@ -354,14 +361,21 @@ This is the prompt."#;
         let content = "---\n- item1\n- item2\n---\nPrompt.";
         let result = Workflow::parse(content);
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), ConfigError::FrontMatterNotMap));
+        assert!(matches!(
+            result.unwrap_err(),
+            ConfigError::FrontMatterNotMap
+        ));
     }
 
     #[test]
     fn test_workflow_parse_prompt_trimmed() {
-        let content = "---\ntracker:\n  kind: linear\n---\n   \n  Prompt with surrounding whitespace.\n  ";
+        let content =
+            "---\ntracker:\n  kind: linear\n---\n   \n  Prompt with surrounding whitespace.\n  ";
         let workflow = Workflow::parse(content).unwrap();
-        assert_eq!(workflow.prompt_template, "Prompt with surrounding whitespace.");
+        assert_eq!(
+            workflow.prompt_template,
+            "Prompt with surrounding whitespace."
+        );
     }
 
     #[test]
@@ -386,7 +400,10 @@ observability: {}
         let workflow = Workflow::parse(content).unwrap();
         let config = ConfigSchema::from_workflow(&workflow).unwrap();
         assert_eq!(config.tracker.kind, Some("linear".to_string()));
-        assert_eq!(config.tracker.project_slug, Some("test-project".to_string()));
+        assert_eq!(
+            config.tracker.project_slug,
+            Some("test-project".to_string())
+        );
     }
 
     #[test]
@@ -424,7 +441,11 @@ observability: {}
         let result = expand_path("~/some/path");
         // Result should be a PathBuf containing "some/path" prefixed with HOME value
         let result_str = result.to_string_lossy();
-        assert!(result_str.ends_with("some/path"), "path should end with some/path: {}", result_str);
+        assert!(
+            result_str.ends_with("some/path"),
+            "path should end with some/path: {}",
+            result_str
+        );
     }
 
     #[test]

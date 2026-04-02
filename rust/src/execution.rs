@@ -1,5 +1,5 @@
 use crate::config::{ConfigSchema, HooksConfig};
-use crate::domain::{Workspace, sanitize_identifier};
+use crate::domain::{sanitize_identifier, Workspace};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use thiserror::Error;
@@ -115,9 +115,12 @@ impl WorkspaceManager {
     }
 
     fn validate_workspace_path(&self, workspace_path: &Path) -> Result<(), WorkspaceError> {
-        let canonical_workspace = workspace_path.canonicalize()
+        let canonical_workspace = workspace_path
+            .canonicalize()
             .map_err(|e| WorkspaceError::InvalidPath(e.to_string()))?;
-        let canonical_root = self.workspace_root.canonicalize()
+        let canonical_root = self
+            .workspace_root
+            .canonicalize()
             .map_err(|e| WorkspaceError::InvalidPath(e.to_string()))?;
 
         if canonical_workspace == canonical_root {
@@ -134,7 +137,12 @@ impl WorkspaceManager {
         Ok(())
     }
 
-    fn run_hook(&self, script: &str, workspace: &Path, hook_name: &str) -> Result<(), WorkspaceError> {
+    fn run_hook(
+        &self,
+        script: &str,
+        workspace: &Path,
+        hook_name: &str,
+    ) -> Result<(), WorkspaceError> {
         info!(workspace = %workspace.display(), hook = hook_name, "Running workspace hook");
 
         let output = Command::new("sh")
@@ -152,7 +160,12 @@ impl WorkspaceManager {
         Ok(())
     }
 
-    fn run_hook_best_effort(&self, script: &str, workspace: &Path, hook_name: &str) -> Result<(), WorkspaceError> {
+    fn run_hook_best_effort(
+        &self,
+        script: &str,
+        workspace: &Path,
+        hook_name: &str,
+    ) -> Result<(), WorkspaceError> {
         match self.run_hook(script, workspace, hook_name) {
             Ok(()) => Ok(()),
             Err(e) => {
@@ -175,7 +188,9 @@ mod workspace_manager_tests {
     fn make_manager() -> WorkspaceManager {
         let root = temp_root();
         let config = ConfigSchema {
-            workspace: WorkspaceConfig { root: Some(root.to_string_lossy().to_string()) },
+            workspace: WorkspaceConfig {
+                root: Some(root.to_string_lossy().to_string()),
+            },
             hooks: HooksConfig::default(),
             ..Default::default()
         };
@@ -277,6 +292,10 @@ mod workspace_manager_tests {
         std::fs::create_dir_all(&workspace_path).ok();
 
         let result = manager.validate_workspace_path(&workspace_path);
-        assert!(result.is_ok(), "deeply nested path should be valid: {:?}", result);
+        assert!(
+            result.is_ok(),
+            "deeply nested path should be valid: {:?}",
+            result
+        );
     }
 }

@@ -47,10 +47,11 @@ impl Session {
         }
     }
 
-    fn set_child_reader(&mut self, child: Child, reader: BufReader<tokio::process::ChildStdout>) {
+    fn set_child_reader(&self, child: Child, reader: BufReader<tokio::process::ChildStdout>) {
         *self.child.lock().unwrap() = Some(child);
-        // Lock is expected to be available since Session was just created
-        *self.reader.try_lock().expect("reader lock should be available") = Some(reader);
+        *self.reader.try_lock().unwrap_or_else(|_| {
+            panic!("reader lock should be available immediately after Session::new")
+        }) = Some(reader);
     }
 }
 
@@ -136,7 +137,7 @@ impl CodexClient {
             .ok_or_else(|| CodexError::ResponseError("Missing thread id".to_string()))?
             .to_string();
 
-        let mut session = Session::new(thread_id, workspace.to_string());
+        let session = Session::new(thread_id, workspace.to_string());
 
         // Re-wrap stdout in a fresh BufReader (reader was consumed)
         let stdout = child.stdout.take().ok_or(CodexError::CodexNotFound)?;
@@ -146,7 +147,13 @@ impl CodexClient {
         Ok(Arc::new(session))
     }
 
-    pub async fn run_turn<F>(&self, session: &Session, prompt: &str, issue: &Issue, mut on_message: F) -> Result<(), CodexError>
+    pub async fn run_turn<F>(
+        &self,
+        session: &Session,
+        prompt: &str,
+        issue: &Issue,
+        mut on_message: F,
+    ) -> Result<(), CodexError>
     where
         F: FnMut(Value) + Send + 'static,
     {
@@ -200,7 +207,8 @@ impl CodexClient {
                     }
 
                     if method == "turn/failed" {
-                        let reason = event.get("params")
+                        let reason = event
+                            .get("params")
                             .map(|p| p.to_string())
                             .unwrap_or_default();
                         on_message(event);
@@ -241,7 +249,8 @@ impl CodexClient {
     }
 
     async fn send_turn_message(&self, session: &Session, msg: &Value) -> Result<(), CodexError> {
-        let line = serde_json::to_string(msg).map_err(|e| CodexError::JsonParseError(e.to_string()))?;
+        let line =
+            serde_json::to_string(msg).map_err(|e| CodexError::JsonParseError(e.to_string()))?;
         let mut stdin_opt = None;
         {
             let mut child_guard = session.child.lock().unwrap();
@@ -250,8 +259,14 @@ impl CodexClient {
             }
         }
         if let Some(ref mut stdin) = stdin_opt {
-            stdin.write_all(line.as_bytes()).await.map_err(|e| CodexError::TurnFailed(e.to_string()))?;
-            stdin.write_all(b"\n").await.map_err(|e| CodexError::TurnFailed(e.to_string()))?;
+            stdin
+                .write_all(line.as_bytes())
+                .await
+                .map_err(|e| CodexError::TurnFailed(e.to_string()))?;
+            stdin
+                .write_all(b"\n")
+                .await
+                .map_err(|e| CodexError::TurnFailed(e.to_string()))?;
         }
         Ok(())
     }
@@ -264,7 +279,9 @@ impl CodexClient {
         let mut reader = match reader_opt {
             Some(r) => r,
             None => {
-                return Err(CodexError::ResponseError("Session reader not initialized".to_string()));
+                return Err(CodexError::ResponseError(
+                    "Session reader not initialized".to_string(),
+                ));
             }
         };
 
@@ -289,10 +306,17 @@ impl CodexClient {
     }
 
     async fn send_line(&self, child: &mut Child, msg: &Value) -> Result<(), CodexError> {
-        let line = serde_json::to_string(msg).map_err(|e| CodexError::JsonParseError(e.to_string()))?;
+        let line =
+            serde_json::to_string(msg).map_err(|e| CodexError::JsonParseError(e.to_string()))?;
         if let Some(ref mut stdin) = child.stdin {
-            stdin.write_all(line.as_bytes()).await.map_err(|e| CodexError::TurnFailed(e.to_string()))?;
-            stdin.write_all(b"\n").await.map_err(|e| CodexError::TurnFailed(e.to_string()))?;
+            stdin
+                .write_all(line.as_bytes())
+                .await
+                .map_err(|e| CodexError::TurnFailed(e.to_string()))?;
+            stdin
+                .write_all(b"\n")
+                .await
+                .map_err(|e| CodexError::TurnFailed(e.to_string()))?;
         }
         Ok(())
     }
@@ -310,10 +334,8 @@ impl CodexClient {
         .await
         {
             Ok(Ok(0)) => Err(CodexError::ResponseTimeout),
-            Ok(Ok(_)) => {
-                serde_json::from_str(line.trim())
-                    .map_err(|e| CodexError::JsonParseError(e.to_string()))
-            }
+            Ok(Ok(_)) => serde_json::from_str(line.trim())
+                .map_err(|e| CodexError::JsonParseError(e.to_string())),
             Ok(Err(e)) => Err(CodexError::ResponseError(e.to_string())),
             Err(_) => Err(CodexError::ResponseTimeout),
         }
@@ -329,7 +351,9 @@ impl CodexClient {
         let mut reader = match reader_opt {
             Some(r) => r,
             None => {
-                return Err(CodexError::ResponseError("Session reader not initialized".to_string()));
+                return Err(CodexError::ResponseError(
+                    "Session reader not initialized".to_string(),
+                ));
             }
         };
 
@@ -340,10 +364,8 @@ impl CodexClient {
 
         match result {
             Ok(Ok(0)) => Err(CodexError::ResponseTimeout),
-            Ok(Ok(_)) => {
-                serde_json::from_str(line.trim())
-                    .map_err(|e| CodexError::JsonParseError(e.to_string()))
-            }
+            Ok(Ok(_)) => serde_json::from_str(line.trim())
+                .map_err(|e| CodexError::JsonParseError(e.to_string())),
             Ok(Err(e)) => Err(CodexError::ResponseError(e.to_string())),
             Err(_) => Err(CodexError::ResponseTimeout),
         }

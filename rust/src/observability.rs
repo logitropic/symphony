@@ -64,8 +64,7 @@ pub struct PollingState {
 pub fn init_logging() {
     use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("info"));
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
 
     tracing_subscriber::registry()
         .with(fmt::layer().json())
@@ -73,10 +72,7 @@ pub fn init_logging() {
         .init();
 }
 
-pub async fn run_http_server(
-    port: u16,
-    state: Arc<tokio::sync::Mutex<OrchestratorRuntimeState>>,
-) {
+pub async fn run_http_server(port: u16, state: Arc<tokio::sync::Mutex<OrchestratorRuntimeState>>) {
     use tokio::net::TcpListener;
 
     let addr = format!("127.0.0.1:{}", port);
@@ -105,7 +101,7 @@ pub async fn run_http_server(
 
             let mut buf = vec![0u8; 4096];
             let n = match stream.read(&mut buf).await {
-                Ok(n) if n == 0 => return,
+                Ok(0) => return,
                 Ok(n) => n,
                 Err(_) => return,
             };
@@ -116,14 +112,14 @@ pub async fn run_http_server(
             let (method, path): (&str, &str) = if let Some(first) = lines.first() {
                 let parts: Vec<&str> = first.split_whitespace().collect();
                 (
-                    parts.get(0).copied().unwrap_or("GET"),
+                    parts.first().copied().unwrap_or("GET"),
                     parts.get(1).copied().unwrap_or("/"),
                 )
             } else {
                 ("GET", "/")
             };
 
-            let response = match (method.as_ref(), path.as_ref()) {
+            let response = match (method, path) {
                 ("GET", "/") => get_dashboard(&state).await,
                 ("GET", "/api/v1/state") => get_state_json(&state).await,
                 ("POST", "/api/v1/refresh") => post_refresh(),
@@ -136,9 +132,7 @@ pub async fn run_http_server(
     }
 }
 
-async fn get_dashboard(
-    state: &Arc<tokio::sync::Mutex<OrchestratorRuntimeState>>,
-) -> String {
+async fn get_dashboard(state: &Arc<tokio::sync::Mutex<OrchestratorRuntimeState>>) -> String {
     let state = state.lock().await;
 
     let running_count = state.running.len();
@@ -164,9 +158,7 @@ async fn get_dashboard(
     )
 }
 
-async fn get_state_json(
-    state: &Arc<tokio::sync::Mutex<OrchestratorRuntimeState>>,
-) -> String {
+async fn get_state_json(state: &Arc<tokio::sync::Mutex<OrchestratorRuntimeState>>) -> String {
     let state = state.lock().await;
 
     let snapshot = RuntimeSnapshot {
@@ -182,7 +174,10 @@ async fn get_state_json(
                 last_event: entry.last_codex_event.clone(),
                 last_message: entry.last_codex_message.clone(),
                 started_at: entry.started_at.to_rfc3339(),
-                last_event_at: entry.last_codex_timestamp.as_ref().map(|ts| ts.to_rfc3339()),
+                last_event_at: entry
+                    .last_codex_timestamp
+                    .as_ref()
+                    .map(|ts| ts.to_rfc3339()),
                 tokens: TokenRow {
                     input_tokens: entry.codex_input_tokens,
                     output_tokens: entry.codex_output_tokens,
@@ -193,13 +188,15 @@ async fn get_state_json(
         retrying: state
             .retry_attempts
             .iter()
-            .map(|(id, entry): (&String, &crate::domain::RetryEntry)| RetryRow {
-                issue_id: id.clone(),
-                identifier: entry.identifier.clone(),
-                attempt: entry.attempt,
-                due_in_ms: entry.due_at_ms - chrono::Utc::now().timestamp_millis(),
-                error: entry.error.clone(),
-            })
+            .map(
+                |(id, entry): (&String, &crate::domain::RetryEntry)| RetryRow {
+                    issue_id: id.clone(),
+                    identifier: entry.identifier.clone(),
+                    attempt: entry.attempt,
+                    due_in_ms: entry.due_at_ms - chrono::Utc::now().timestamp_millis(),
+                    error: entry.error.clone(),
+                },
+            )
             .collect(),
         codex_totals: state.codex_totals.clone(),
         rate_limits: state.codex_rate_limits.clone(),

@@ -45,7 +45,13 @@ pub fn normalize_issue_state(state: &str) -> String {
 pub fn sanitize_identifier(identifier: &str) -> String {
     identifier
         .chars()
-        .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '-' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
         .collect::<String>()
         .trim_matches('-')
         .to_lowercase()

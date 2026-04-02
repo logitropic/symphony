@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::sync::{Mutex, watch};
+use tokio::sync::{watch, Mutex};
 use tracing::{error, info};
 
 pub mod config;
@@ -55,10 +55,7 @@ async fn main() -> anyhow::Result<()> {
 
     let workspace_manager = WorkspaceManager::new(&config);
 
-    let codex_client = CodexClient::new(
-        &config.codex,
-        &config.workspace.root().to_string_lossy(),
-    );
+    let codex_client = CodexClient::new(&config.codex, &config.workspace.root().to_string_lossy());
 
     // Create shutdown channel
     let (shutdown_tx, shutdown_rx) = watch::channel(false);

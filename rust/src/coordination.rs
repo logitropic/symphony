@@ -1,8 +1,5 @@
 use crate::config::ConfigSchema;
-use crate::domain::{
-    normalize_issue_state, priority_rank, OrchestratorRuntimeState,
-    RunningEntry,
-};
+use crate::domain::{normalize_issue_state, priority_rank, OrchestratorRuntimeState, RunningEntry};
 use crate::execution::WorkspaceManager;
 use crate::integration::LinearClient;
 use crate::protocol::CodexClient;
@@ -117,14 +114,8 @@ impl Orchestrator {
                 return a_rank.cmp(&b_rank);
             }
             // Created at oldest first
-            let a_time = a
-                .created_at
-                .map(|dt| dt.timestamp())
-                .unwrap_or(i64::MAX);
-            let b_time = b
-                .created_at
-                .map(|dt| dt.timestamp())
-                .unwrap_or(i64::MAX);
+            let a_time = a.created_at.map(|dt| dt.timestamp()).unwrap_or(i64::MAX);
+            let b_time = b.created_at.map(|dt| dt.timestamp()).unwrap_or(i64::MAX);
             if a_time != b_time {
                 return a_time.cmp(&b_time);
             }
@@ -148,13 +139,21 @@ impl Orchestrator {
             }
 
             if self.should_dispatch(&issue).await {
-                let identifier = issue.identifier.clone().unwrap_or_else(|| issue.id.clone().unwrap_or_default());
+                let identifier = issue
+                    .identifier
+                    .clone()
+                    .unwrap_or_else(|| issue.id.clone().unwrap_or_default());
                 match self.workspace_manager.create_for_issue(&identifier) {
                     Ok(workspace) => {
-                        if let Err(e) = self.workspace_manager.run_before_run_hook(&workspace.path) {
+                        if let Err(e) = self.workspace_manager.run_before_run_hook(&workspace.path)
+                        {
                             warn!(error = %e, "Before_run hook failed");
                         }
-                        if let Err(e) = orchestrator_arc.clone().dispatch_issue(issue, workspace.path).await {
+                        if let Err(e) = orchestrator_arc
+                            .clone()
+                            .dispatch_issue(issue, workspace.path)
+                            .await
+                        {
                             warn!(error = %e, "Failed to dispatch issue");
                         }
                     }
@@ -227,8 +226,9 @@ impl Orchestrator {
 
                 for issue_id in running_ids {
                     if let Some(refreshed) = refreshed_map.get(&issue_id) {
-                        let normalized_state =
-                            normalize_issue_state(refreshed.state.as_ref().unwrap_or(&"".to_string()));
+                        let normalized_state = normalize_issue_state(
+                            refreshed.state.as_ref().unwrap_or(&"".to_string()),
+                        );
 
                         if terminal_states.contains(&normalized_state) {
                             // Terminal state - cleanup workspace
@@ -278,10 +278,7 @@ impl Orchestrator {
         let state = self.state.lock().await;
 
         // Not already running
-        if state
-            .running
-            .contains_key(issue.id.as_ref().unwrap())
-        {
+        if state.running.contains_key(issue.id.as_ref().unwrap()) {
             return false;
         }
 
@@ -342,9 +339,8 @@ impl Orchestrator {
             .running
             .values()
             .filter(|e| {
-                normalize_issue_state(
-                    &e.issue.state.as_ref().unwrap_or(&"".to_string()),
-                ) == issue_state
+                normalize_issue_state(e.issue.state.as_ref().unwrap_or(&"".to_string()))
+                    == issue_state
             })
             .count() as i32;
 
@@ -429,6 +425,7 @@ impl Orchestrator {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_worker(
     state: Arc<Mutex<OrchestratorRuntimeState>>,
     config: ConfigSchema,
@@ -443,7 +440,9 @@ async fn run_worker(
     let turn_timeout_ms = config.codex.turn_timeout_ms();
 
     // Start Codex session
-    let session_result = codex_client.start_session(workspace_path.to_str().unwrap_or("")).await;
+    let session_result = codex_client
+        .start_session(workspace_path.to_str().unwrap_or(""))
+        .await;
 
     let session = match session_result {
         Ok(s) => {
@@ -508,7 +507,8 @@ async fn run_worker(
                 }
             }
         }),
-    ).await;
+    )
+    .await;
 
     match turn_result {
         Ok(Ok(())) => {
@@ -529,7 +529,8 @@ async fn run_worker(
             warn!(issue_id = %issue_id, "Turn timed out after {}ms", turn_timeout_ms);
             let mut state_guard = state.lock().await;
             if let Some(entry) = state_guard.running.get_mut(&issue_id) {
-                entry.last_codex_message = Some(format!("Turn timed out after {}ms", turn_timeout_ms));
+                entry.last_codex_message =
+                    Some(format!("Turn timed out after {}ms", turn_timeout_ms));
                 entry.last_codex_timestamp = Some(Utc::now());
             }
         }
@@ -555,13 +556,19 @@ fn build_turn_prompt(issue: &crate::domain::Issue) -> String {
 
     let non_empty_labels: Vec<_> = issue.labels.iter().filter(|l| !l.is_empty()).collect();
     if !non_empty_labels.is_empty() {
-        prompt.push_str(&format!("Labels: {}\n", non_empty_labels.iter().map(|l| l.as_str()).collect::<Vec<_>>().join(", ")));
+        prompt.push_str(&format!(
+            "Labels: {}\n",
+            non_empty_labels
+                .iter()
+                .map(|l| l.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
     }
 
     prompt.push_str(&format!("\nBranch: {}\n", branch));
     prompt
 }
-
 
 async fn handle_turn_error(
     state: &Arc<Mutex<OrchestratorRuntimeState>>,

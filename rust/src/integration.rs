@@ -34,9 +34,15 @@ pub struct LinearClient {
 
 impl LinearClient {
     pub fn new(config: &ConfigSchema) -> Result<Self, LinearError> {
-        let api_key = config.tracker.api_key.clone()
+        let api_key = config
+            .tracker
+            .api_key
+            .clone()
             .ok_or(LinearError::MissingApiKey)?;
-        let project_slug = config.tracker.project_slug.clone()
+        let project_slug = config
+            .tracker
+            .project_slug
+            .clone()
             .ok_or(LinearError::MissingProjectSlug)?;
 
         Ok(Self {
@@ -47,22 +53,35 @@ impl LinearClient {
         })
     }
 
-    pub async fn fetch_candidate_issues(&self, active_states: &[String]) -> Result<Vec<Issue>, LinearError> {
+    pub async fn fetch_candidate_issues(
+        &self,
+        active_states: &[String],
+    ) -> Result<Vec<Issue>, LinearError> {
         self.fetch_issues_by_states_impl(active_states, None).await
     }
 
-    pub async fn fetch_issues_by_states(&self, states: &[String]) -> Result<Vec<Issue>, LinearError> {
+    pub async fn fetch_issues_by_states(
+        &self,
+        states: &[String],
+    ) -> Result<Vec<Issue>, LinearError> {
         self.fetch_issues_by_states_impl(states, None).await
     }
 
-    pub async fn fetch_issue_states_by_ids(&self, ids: &[String]) -> Result<Vec<Issue>, LinearError> {
+    pub async fn fetch_issue_states_by_ids(
+        &self,
+        ids: &[String],
+    ) -> Result<Vec<Issue>, LinearError> {
         if ids.is_empty() {
             return Ok(vec![]);
         }
         self.fetch_issues_by_ids_impl(ids).await
     }
 
-    async fn fetch_issues_by_states_impl(&self, state_names: &[String], mut after: Option<String>) -> Result<Vec<Issue>, LinearError> {
+    async fn fetch_issues_by_states_impl(
+        &self,
+        state_names: &[String],
+        mut after: Option<String>,
+    ) -> Result<Vec<Issue>, LinearError> {
         let query = r#"
         query SymphonyLinearPoll($projectSlug: String!, $stateNames: [String!]!, $first: Int!, $relationFirst: Int!, $after: String) {
             issues(filter: {project: {slugId: {eq: $projectSlug}}, state: {name: {in: $stateNames}}}, first: $first, after: $after) {
@@ -111,16 +130,30 @@ impl LinearClient {
 
             let body = self.graphql(query, variables).await?;
 
-            let data = body.get("data").and_then(|d| d.get("issues")).ok_or(LinearError::UnknownPayload)?;
+            let data = body
+                .get("data")
+                .and_then(|d| d.get("issues"))
+                .ok_or(LinearError::UnknownPayload)?;
 
-            let nodes = data.get("nodes").and_then(|n| n.as_array())
+            let nodes = data
+                .get("nodes")
+                .and_then(|n| n.as_array())
                 .ok_or(LinearError::UnknownPayload)?;
 
             let page_info = data.get("pageInfo").ok_or(LinearError::UnknownPayload)?;
-            let has_next_page = page_info.get("hasNextPage").and_then(|h| h.as_bool()).unwrap_or(false);
-            after = page_info.get("endCursor").and_then(|e| e.as_str()).map(|s| s.to_string());
+            let has_next_page = page_info
+                .get("hasNextPage")
+                .and_then(|h| h.as_bool())
+                .unwrap_or(false);
+            after = page_info
+                .get("endCursor")
+                .and_then(|e| e.as_str())
+                .map(|s| s.to_string());
 
-            let issues: Vec<Issue> = nodes.iter().filter_map(|n| self.normalize_issue(n)).collect();
+            let issues: Vec<Issue> = nodes
+                .iter()
+                .filter_map(|n| self.normalize_issue(n))
+                .collect();
             all_issues.extend(issues);
 
             if !has_next_page {
@@ -175,16 +208,37 @@ impl LinearClient {
 
         let body = self.graphql(query, variables).await?;
 
-        let data = body.get("data").and_then(|d| d.get("issues")).ok_or(LinearError::UnknownPayload)?;
-        let nodes = data.get("nodes").and_then(|n| n.as_array()).ok_or(LinearError::UnknownPayload)?;
+        let data = body
+            .get("data")
+            .and_then(|d| d.get("issues"))
+            .ok_or(LinearError::UnknownPayload)?;
+        let nodes = data
+            .get("nodes")
+            .and_then(|n| n.as_array())
+            .ok_or(LinearError::UnknownPayload)?;
 
-        let mut issues: Vec<Issue> = nodes.iter().filter_map(|n| self.normalize_issue(n)).collect();
+        let mut issues: Vec<Issue> = nodes
+            .iter()
+            .filter_map(|n| self.normalize_issue(n))
+            .collect();
 
         // Sort by original ID order
-        let id_order: HashMap<&str, usize> = ids.iter().enumerate().map(|(i, id)| (id.as_str(), i)).collect();
+        let id_order: HashMap<&str, usize> = ids
+            .iter()
+            .enumerate()
+            .map(|(i, id)| (id.as_str(), i))
+            .collect();
         issues.sort_by(|a, b| {
-            let a_idx = a.id.as_ref().and_then(|id| id_order.get(id.as_str())).copied().unwrap_or(usize::MAX);
-            let b_idx = b.id.as_ref().and_then(|id| id_order.get(id.as_str())).copied().unwrap_or(usize::MAX);
+            let a_idx =
+                a.id.as_ref()
+                    .and_then(|id| id_order.get(id.as_str()))
+                    .copied()
+                    .unwrap_or(usize::MAX);
+            let b_idx =
+                b.id.as_ref()
+                    .and_then(|id| id_order.get(id.as_str()))
+                    .copied()
+                    .unwrap_or(usize::MAX);
             a_idx.cmp(&b_idx)
         });
 
@@ -197,7 +251,8 @@ impl LinearClient {
             "variables": variables
         });
 
-        let response = self.client
+        let response = self
+            .client
             .post(&self.endpoint)
             .header("Authorization", format!("Bearer {}", &self.api_key))
             .header("Content-Type", "application/json")
@@ -211,7 +266,9 @@ impl LinearClient {
             return Err(LinearError::ApiStatus(status.as_u16() as i32));
         }
 
-        let body: Value = response.json().await
+        let body: Value = response
+            .json()
+            .await
             .map_err(|e| LinearError::ApiRequest(e.to_string()))?;
 
         if let Some(errors) = body.get("errors") {
@@ -224,14 +281,20 @@ impl LinearClient {
     fn normalize_issue(&self, data: &Value) -> Option<Issue> {
         let id = data.get("id")?.as_str()?.to_string();
 
-        let labels: Vec<String> = data.get("labels")
+        let labels: Vec<String> = data
+            .get("labels")
             .and_then(|l| l.get("nodes"))
             .and_then(|n| n.as_array())?
             .iter()
-            .filter_map(|l| l.get("name").and_then(|n| n.as_str()).map(|s| s.to_lowercase()))
+            .filter_map(|l| {
+                l.get("name")
+                    .and_then(|n| n.as_str())
+                    .map(|s| s.to_lowercase())
+            })
             .collect();
 
-        let blocked_by: Vec<Issue> = data.get("inverseRelations")
+        let blocked_by: Vec<Issue> = data
+            .get("inverseRelations")
             .and_then(|r| r.get("nodes"))
             .and_then(|n| n.as_array())?
             .iter()
@@ -242,9 +305,19 @@ impl LinearClient {
                 }
                 let issue_data = rel.get("issue")?;
                 Some(Issue {
-                    id: issue_data.get("id").and_then(|v| v.as_str()).map(|s| s.to_string()),
-                    identifier: issue_data.get("identifier").and_then(|v| v.as_str()).map(|s| s.to_string()),
-                    state: issue_data.get("state").and_then(|s| s.get("name")).and_then(|n| n.as_str()).map(|s| s.to_string()),
+                    id: issue_data
+                        .get("id")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string()),
+                    identifier: issue_data
+                        .get("identifier")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string()),
+                    state: issue_data
+                        .get("state")
+                        .and_then(|s| s.get("name"))
+                        .and_then(|n| n.as_str())
+                        .map(|s| s.to_string()),
                     title: None,
                     description: None,
                     priority: None,
@@ -262,23 +335,57 @@ impl LinearClient {
 
         Some(Issue {
             id: Some(id),
-            identifier: data.get("identifier").and_then(|v| v.as_str()).map(|s| s.to_string()),
-            title: data.get("title").and_then(|v| v.as_str()).map(|s| s.to_string()),
-            description: data.get("description").and_then(|v| v.as_str()).map(|s| s.to_string()),
-            priority: data.get("priority").and_then(|v| v.as_i64()).map(|v| v as i32),
-            state: data.get("state").and_then(|s| s.get("name")).and_then(|n| n.as_str()).map(|s| s.to_string()),
-            branch_name: data.get("branchName").and_then(|v| v.as_str()).map(|s| s.to_string()),
-            url: data.get("url").and_then(|v| v.as_str()).map(|s| s.to_string()),
-            assignee_id: data.get("assignee").and_then(|a| a.get("id")).and_then(|v| v.as_str()).map(|s| s.to_string()),
+            identifier: data
+                .get("identifier")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string()),
+            title: data
+                .get("title")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string()),
+            description: data
+                .get("description")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string()),
+            priority: data
+                .get("priority")
+                .and_then(|v| v.as_i64())
+                .map(|v| v as i32),
+            state: data
+                .get("state")
+                .and_then(|s| s.get("name"))
+                .and_then(|n| n.as_str())
+                .map(|s| s.to_string()),
+            branch_name: data
+                .get("branchName")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string()),
+            url: data
+                .get("url")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string()),
+            assignee_id: data
+                .get("assignee")
+                .and_then(|a| a.get("id"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string()),
             labels,
             blocked_by,
             assigned_to_worker: true,
-            created_at: data.get("createdAt").and_then(|v| v.as_str()).and_then(|s| parse_datetime(s)),
-            updated_at: data.get("updatedAt").and_then(|v| v.as_str()).and_then(|s| parse_datetime(s)),
+            created_at: data
+                .get("createdAt")
+                .and_then(|v| v.as_str())
+                .and_then(parse_datetime),
+            updated_at: data
+                .get("updatedAt")
+                .and_then(|v| v.as_str())
+                .and_then(parse_datetime),
         })
     }
 }
 
 fn parse_datetime(s: &str) -> Option<DateTime<Utc>> {
-    DateTime::parse_from_rfc3339(s).ok().map(|dt| dt.with_timezone(&Utc))
+    DateTime::parse_from_rfc3339(s)
+        .ok()
+        .map(|dt| dt.with_timezone(&Utc))
 }
