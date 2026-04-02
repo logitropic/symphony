@@ -83,8 +83,8 @@ impl LinearClient {
         mut after: Option<String>,
     ) -> Result<Vec<Issue>, LinearError> {
         let query = r#"
-        query SymphonyLinearPoll($projectSlug: String!, $stateNames: [String!]!, $first: Int!, $relationFirst: Int!, $after: String) {
-            issues(filter: {project: {slugId: {eq: $projectSlug}}, state: {name: {in: $stateNames}}}, first: $first, after: $after) {
+        query SymphonyLinearPoll($stateNames: [String!]!, $first: Int!, $after: String) {
+            issues(filter: {state: {name: {in: $stateNames}}}, first: $first, after: $after) {
                 nodes {
                     id
                     identifier
@@ -96,7 +96,7 @@ impl LinearClient {
                     url
                     assignee { id }
                     labels { nodes { name } }
-                    inverseRelations(first: $relationFirst) {
+                    inverseRelations(first: 50) {
                         nodes {
                             type
                             issue {
@@ -121,10 +121,8 @@ impl LinearClient {
 
         loop {
             let variables = serde_json::json!({
-                "projectSlug": self.project_slug,
                 "stateNames": state_names,
                 "first": 50,
-                "relationFirst": 50,
                 "after": after
             });
 
@@ -261,7 +259,7 @@ impl LinearClient {
             let response = match self
                 .client
                 .post(&self.endpoint)
-                .header("Authorization", format!("Bearer {}", &self.api_key))
+                .header("Authorization", &self.api_key)
                 .header("Content-Type", "application/json")
                 .json(&body)
                 .send()

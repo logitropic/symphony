@@ -117,13 +117,29 @@ impl WorkspaceManager {
     }
 
     fn validate_workspace_path(&self, workspace_path: &Path) -> Result<(), WorkspaceError> {
-        let canonical_workspace = workspace_path
-            .canonicalize()
-            .map_err(|e| WorkspaceError::InvalidPath(e.to_string()))?;
+        // Canonicalize the root (it should exist)
         let canonical_root = self
             .workspace_root
             .canonicalize()
             .map_err(|e| WorkspaceError::InvalidPath(e.to_string()))?;
+
+        // For the workspace path, canonicalize if it exists,
+        // otherwise resolve it absolutely via the parent directory
+        let canonical_workspace = if workspace_path.exists() {
+            workspace_path
+                .canonicalize()
+                .map_err(|e| WorkspaceError::InvalidPath(e.to_string()))?
+        } else if let Some(parent) = workspace_path.parent() {
+            // Path doesn't exist yet - canonicalize parent and append child name
+            let canonical_parent = parent
+                .canonicalize()
+                .map_err(|e| WorkspaceError::InvalidPath(e.to_string()))?;
+            canonical_parent.join(workspace_path.file_name().unwrap_or_default())
+        } else {
+            return Err(WorkspaceError::InvalidPath(
+                "Cannot resolve workspace path".to_string(),
+            ));
+        };
 
         if canonical_workspace == canonical_root {
             return Err(WorkspaceError::WorkspaceEqualsRoot);
