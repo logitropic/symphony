@@ -275,9 +275,9 @@ impl CodexClient {
     async fn read_event(&self, session: &Session) -> Result<Option<Value>, CodexError> {
         let mut line = String::new();
 
-        // Extract reader from mutex, drop lock before await, then restore
+        // Extract reader from mutex
         let reader_opt = session.reader.lock().await.take();
-        let mut reader = match reader_opt {
+        let reader = match reader_opt {
             Some(r) => r,
             None => {
                 return Err(CodexError::ResponseError(
@@ -286,10 +286,18 @@ impl CodexClient {
             }
         };
 
+        // Prevent reader from being dropped if task is cancelled during await
+        let mut reader = std::mem::ManuallyDrop::new(reader);
+
         let result = reader.read_line(&mut line).await;
 
-        // Restore reader to mutex
-        *session.reader.lock().await = Some(reader);
+        // Restore reader to mutex (reader is dropped from ManuallyDrop here)
+        // Use a fresh lock to avoid holding the original lock across the await
+        {
+            let mut guard = session.reader.lock().await;
+            // SAFETY: We exclusively own reader via ManuallyDrop and are restoring it here
+            *guard = Some(unsafe { std::mem::ManuallyDrop::take(&mut reader) });
+        }
 
         match result {
             Ok(0) => Ok(None),
@@ -347,9 +355,9 @@ impl CodexClient {
         let timeout = std::time::Duration::from_millis(timeout_ms);
         let mut line = String::new();
 
-        // Extract reader, drop lock before await, then restore
+        // Extract reader from mutex
         let reader_opt = session.reader.lock().await.take();
-        let mut reader = match reader_opt {
+        let reader = match reader_opt {
             Some(r) => r,
             None => {
                 return Err(CodexError::ResponseError(
@@ -358,10 +366,17 @@ impl CodexClient {
             }
         };
 
+        // Prevent reader from being dropped if task is cancelled during await
+        let mut reader = std::mem::ManuallyDrop::new(reader);
+
         let result = tokio::time::timeout(timeout, reader.read_line(&mut line)).await;
 
-        // Restore reader
-        *session.reader.lock().await = Some(reader);
+        // Restore reader to mutex
+        {
+            let mut guard = session.reader.lock().await;
+            // SAFETY: We exclusively own reader via ManuallyDrop and are restoring it here
+            *guard = Some(unsafe { std::mem::ManuallyDrop::take(&mut reader) });
+        }
 
         match result {
             Ok(Ok(0)) => Err(CodexError::ResponseTimeout),

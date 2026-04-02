@@ -43,7 +43,7 @@ pub fn normalize_issue_state(state: &str) -> String {
 }
 
 pub fn sanitize_identifier(identifier: &str) -> String {
-    identifier
+    let sanitized: String = identifier
         .chars()
         .map(|c| {
             if c.is_alphanumeric() || c == '-' || c == '_' {
@@ -54,7 +54,20 @@ pub fn sanitize_identifier(identifier: &str) -> String {
         })
         .collect::<String>()
         .trim_matches('-')
-        .to_lowercase()
+        .to_lowercase();
+
+    // Append a short hash suffix to prevent collisions from different
+    // special characters that map to the same dash-separated key.
+    // Use first 8 chars of a simple hash to keep it readable.
+    let hash = {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut hasher = DefaultHasher::new();
+        identifier.hash(&mut hasher);
+        format!("{:08x}", hasher.finish())
+    };
+
+    format!("{}-{}", sanitized, &hash[..6.min(hash.len())])
 }
 
 /// Token usage totals across all sessions.
@@ -150,32 +163,50 @@ mod tests {
     #[test]
     fn test_sanitize_identifier_special_chars() {
         // Special chars become dashes, then trailing dashes are trimmed
-        assert_eq!(sanitize_identifier("ABC-123!@#"), "abc-123");
+        // Result includes hash suffix for collision prevention
+        let result = sanitize_identifier("ABC-123!@#");
+        assert!(result.starts_with("abc-123-"), "got: {}", result);
     }
 
     #[test]
     fn test_sanitize_identifier_trim_dashes() {
-        assert_eq!(sanitize_identifier("...hello..."), "hello");
+        let result = sanitize_identifier("...hello...");
+        assert!(result.starts_with("hello-"), "got: {}", result);
     }
 
     #[test]
     fn test_sanitize_identifier_lowercase() {
-        assert_eq!(sanitize_identifier("SYM-42"), "sym-42");
+        let result = sanitize_identifier("SYM-42");
+        assert!(result.starts_with("sym-42-"), "got: {}", result);
     }
 
     #[test]
     fn test_sanitize_identifier_spaces_become_dashes() {
-        assert_eq!(sanitize_identifier("hello world"), "hello-world");
+        let result = sanitize_identifier("hello world");
+        assert!(result.starts_with("hello-world-"), "got: {}", result);
     }
 
     #[test]
     fn test_sanitize_identifier_preserves_valid() {
-        assert_eq!(sanitize_identifier("my-valid_issue-1"), "my-valid_issue-1");
+        let result = sanitize_identifier("my-valid_issue-1");
+        assert!(result.starts_with("my-valid_issue-1-"), "got: {}", result);
     }
 
     #[test]
     fn test_sanitize_identifier_all_special() {
-        assert_eq!(sanitize_identifier("!@#$%"), "");
+        // All special chars become dashes, then trim, then hash suffix
+        let result = sanitize_identifier("!@#$%");
+        // Should not be empty since we add a hash suffix
+        assert!(!result.is_empty(), "got: {}", result);
+        assert!(result.starts_with("-"), "got: {}", result);
+    }
+
+    #[test]
+    fn test_sanitize_identifier_different_inputs_produce_different_outputs() {
+        // Two different inputs should produce different outputs (no collision)
+        let id1 = sanitize_identifier("ABC-123!@#");
+        let id2 = sanitize_identifier("ABC-123#$%");
+        assert_ne!(id1, id2, "different inputs should not collide");
     }
 
     #[test]

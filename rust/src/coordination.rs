@@ -23,6 +23,30 @@ pub enum OrchestratorError {
     CodexError(String),
 }
 
+impl From<crate::execution::WorkspaceError> for OrchestratorError {
+    fn from(e: crate::execution::WorkspaceError) -> Self {
+        OrchestratorError::WorkspaceError(e.to_string())
+    }
+}
+
+impl From<crate::protocol::CodexError> for OrchestratorError {
+    fn from(e: crate::protocol::CodexError) -> Self {
+        OrchestratorError::CodexError(e.to_string())
+    }
+}
+
+impl From<crate::integration::LinearError> for OrchestratorError {
+    fn from(e: crate::integration::LinearError) -> Self {
+        OrchestratorError::TrackerError(e.to_string())
+    }
+}
+
+impl From<crate::config::ConfigError> for OrchestratorError {
+    fn from(e: crate::config::ConfigError) -> Self {
+        OrchestratorError::ConfigValidation(e.to_string())
+    }
+}
+
 #[derive(Clone)]
 pub struct Orchestrator {
     state: Arc<Mutex<OrchestratorRuntimeState>>,

@@ -293,14 +293,8 @@ impl LinearClient {
                         .unwrap_or(backoff_ms);
                     tokio::time::sleep(std::time::Duration::from_millis(retry_after_ms)).await;
                     backoff_ms = backoff_ms.saturating_mul(2);
-                    // Reconstruct client for retry (reqwest doesn't support body reuse)
-                    let response_body: Result<Value, _> = response.json().await;
-                    if let Ok(body) = response_body {
-                        // We got a body even with error status - check if it's retryable
-                        if let Some(errors) = body.get("errors") {
-                            last_error = Some(LinearError::GraphQLErrors(errors.to_string()));
-                        }
-                    }
+                    // Consume the response body to allow connection reuse, then retry
+                    let _ = response.bytes().await;
                     continue;
                 }
                 return Err(LinearError::ApiStatus(status.as_u16() as i32));

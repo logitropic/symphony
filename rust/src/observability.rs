@@ -80,10 +80,10 @@ pub fn init_logging() {
 
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
 
-    tracing_subscriber::registry()
+    let _ = tracing_subscriber::registry()
         .with(fmt::layer().json())
         .with(filter)
-        .init();
+        .try_init();
 }
 
 pub async fn run_http_server(port: u16, state: Arc<Mutex<OrchestratorRuntimeState>>) {

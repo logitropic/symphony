@@ -52,22 +52,23 @@ impl WorkspaceManager {
         // Check if path is valid (inside root)
         self.validate_workspace_path(&workspace_path)?;
 
-        // Determine if newly created
-        let created_now = if workspace_path.exists() {
-            if workspace_path.is_dir() {
-                false
-            } else {
-                // Replace file with directory
-                std::fs::remove_file(&workspace_path)
-                    .map_err(|e| WorkspaceError::CreationFailed(e.to_string()))?;
-                std::fs::create_dir_all(&workspace_path)
-                    .map_err(|e| WorkspaceError::CreationFailed(e.to_string()))?;
-                true
+        // Determine if newly created using a more atomic approach to avoid TOCTOU race
+        let created_now = match std::fs::create_dir_all(&workspace_path) {
+            Ok(()) => true,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                // Path exists - verify it's a directory, replace if it's a file
+                if workspace_path.is_dir() {
+                    false
+                } else {
+                    // Replace file with directory
+                    std::fs::remove_file(&workspace_path)
+                        .map_err(|e| WorkspaceError::CreationFailed(e.to_string()))?;
+                    std::fs::create_dir_all(&workspace_path)
+                        .map_err(|e| WorkspaceError::CreationFailed(e.to_string()))?;
+                    true
+                }
             }
-        } else {
-            std::fs::create_dir_all(&workspace_path)
-                .map_err(|e| WorkspaceError::CreationFailed(e.to_string()))?;
-            true
+            Err(e) => return Err(WorkspaceError::CreationFailed(e.to_string())),
         };
 
         // Run after_create hook if newly created
