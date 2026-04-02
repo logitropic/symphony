@@ -1,0 +1,10 @@
+/Users/hieunguyen/Coding/logitropic/symphony/rust/target/debug/deps/kstring-5a92d6ba522f7c7a.d: /Users/hieunguyen/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/kstring-2.0.2/src/lib.rs /Users/hieunguyen/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/kstring-2.0.2/src/stack.rs /Users/hieunguyen/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/kstring-2.0.2/src/string.rs /Users/hieunguyen/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/kstring-2.0.2/src/string_cow.rs /Users/hieunguyen/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/kstring-2.0.2/src/string_ref.rs /Users/hieunguyen/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/kstring-2.0.2/src/backend.rs
+
+/Users/hieunguyen/Coding/logitropic/symphony/rust/target/debug/deps/libkstring-5a92d6ba522f7c7a.rmeta: /Users/hieunguyen/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/kstring-2.0.2/src/lib.rs /Users/hieunguyen/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/kstring-2.0.2/src/stack.rs /Users/hieunguyen/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/kstring-2.0.2/src/string.rs /Users/hieunguyen/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/kstring-2.0.2/src/string_cow.rs /Users/hieunguyen/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/kstring-2.0.2/src/string_ref.rs /Users/hieunguyen/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/kstring-2.0.2/src/backend.rs
+
+/Users/hieunguyen/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/kstring-2.0.2/src/lib.rs:
+/Users/hieunguyen/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/kstring-2.0.2/src/stack.rs:
+/Users/hieunguyen/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/kstring-2.0.2/src/string.rs:
+/Users/hieunguyen/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/kstring-2.0.2/src/string_cow.rs:
+/Users/hieunguyen/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/kstring-2.0.2/src/string_ref.rs:
+/Users/hieunguyen/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/kstring-2.0.2/src/backend.rs:
