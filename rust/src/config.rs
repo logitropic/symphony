@@ -191,7 +191,9 @@ impl Default for ConfigSchema {
 impl ConfigSchema {
     pub fn from_workflow(workflow: &Workflow) -> Result<Self, ConfigError> {
         let config_value = &workflow.config;
-        let mut config: ConfigSchema = serde_json::from_value(serde_json::to_value(config_value).unwrap_or(serde_json::json!({})))
+        let config_json = serde_json::to_value(config_value)
+            .map_err(|e| ConfigError::InvalidConfig(e.to_string()))?;
+        let mut config: ConfigSchema = serde_json::from_value(config_json)
             .map_err(|e| ConfigError::InvalidConfig(e.to_string()))?;
 
         // Apply environment indirection for api_key

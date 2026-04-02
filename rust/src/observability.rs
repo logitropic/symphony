@@ -145,7 +145,7 @@ async fn get_dashboard(
     let retrying_count = state.retry_attempts.len();
     let total_tokens = state.codex_totals.total_tokens;
 
-    format!(
+    let body = format!(
         r#"<!DOCTYPE html>
 <html>
 <head><title>Symphony Dashboard</title></head>
@@ -155,6 +155,12 @@ async fn get_dashboard(
 </body>
 </html>"#,
         running_count, retrying_count, total_tokens
+    );
+
+    format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        body.len(),
+        body
     )
 }
 
@@ -204,13 +210,28 @@ async fn get_state_json(
         },
     };
 
-    serde_json::to_string(&snapshot).unwrap_or_else(|_| "{}".to_string())
+    let body = serde_json::to_string(&snapshot).unwrap_or_else(|_| "{}".to_string());
+    format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        body.len(),
+        body
+    )
 }
 
 fn post_refresh() -> String {
-    "HTTP/1.1 202 Accepted\r\nContent-Type: application/json\r\n\r\n{\"queued\":true}".to_string()
+    let body = r#"{"queued":true}"#;
+    format!(
+        "HTTP/1.1 202 Accepted\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        body.len(),
+        body
+    )
 }
 
 fn not_found() -> String {
-    "HTTP/1.1 404 Not Found\r\nContent-Type: application/json\r\n\r\n{\"error\":\"not_found\"}".to_string()
+    let body = r#"{"error":"not_found"}"#;
+    format!(
+        "HTTP/1.1 404 Not Found\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        body.len(),
+        body
+    )
 }

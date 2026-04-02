@@ -49,7 +49,8 @@ impl Session {
 
     fn set_child_reader(&mut self, child: Child, reader: BufReader<tokio::process::ChildStdout>) {
         *self.child.lock().unwrap() = Some(child);
-        *self.reader.try_lock().unwrap() = Some(reader);
+        // Lock is expected to be available since Session was just created
+        *self.reader.try_lock().expect("reader lock should be available") = Some(reader);
     }
 }
 
