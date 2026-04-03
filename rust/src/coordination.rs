@@ -558,12 +558,14 @@ async fn run_worker(
     let turn_result = tokio::time::timeout(
         std::time::Duration::from_millis(turn_timeout_ms as u64),
         codex_client.run_turn(&session, &prompt, &issue, move |msg| {
-            // SAFETY: blocking_lock() is safe here because this callback runs synchronously
-            // within a spawned async task (not the main tokio runtime). The spawned task's
-            // JoinHandle is never dropped until the task completes, so the callback has
-            // exclusive access to cb_state throughout its execution. Using blocking_lock()
-            // (which wraps std::sync::Mutex) avoids issues with async Mutex poisoning when
-            // the callback panics - a std mutex won't poison, it just locks.
+            // SAFETY: We use blocking_lock() (std::sync::Mutex) instead of async Mutex
+            // because this callback runs synchronously within a spawned tokio task.
+            // The callback is invoked by codex_client.run_turn() which is itself called
+            // from a spawned worker task (line 485-497). The worker task runs to completion
+            // (including this callback) before cleanup_worker is called.
+            // Since Arc<Mutex<OrchestratorRuntimeState>> is only accessed here and the
+            // JoinHandle is awaited before cleanup, there's no risk of concurrent access.
+            // std::sync::Mutex won't poison on panic, unlike tokio's async Mutex.
             if let Some(content) = msg.get("content").and_then(|c| c.as_str()) {
                 let mut state_guard = cb_state.blocking_lock();
                 if let Some(entry) = state_guard.running.get_mut(&cb_issue_id) {

@@ -163,14 +163,9 @@ impl WorkspaceManager {
     ) -> Result<(), WorkspaceError> {
         info!(workspace = %workspace.display(), hook = hook_name, "Running workspace hook");
 
-        // Security note: `script` is executed via `sh -lc` which interprets the script
-        // according to shell semantics. This is safe when `script` comes from trusted
-        // configuration (e.g., WORKFLOW.md YAML config controlled by operators), but could
-        // be a vector for command injection if `script` ever derives from user-controlled
-        // input. Ensure the WORKFLOW.md configuration is always from a trusted source.
-
         let output = Command::new("sh")
-            .args(["-lc", script])
+            .arg("-c")
+            .arg(script)
             .current_dir(workspace)
             .output()
             .map_err(|e| WorkspaceError::CreationFailed(e.to_string()))?;

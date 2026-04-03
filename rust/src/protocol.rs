@@ -275,29 +275,34 @@ impl CodexClient {
     async fn read_event(&self, session: &Session) -> Result<Option<Value>, CodexError> {
         let mut line = String::new();
 
-        // Extract reader from mutex
-        let reader_opt = session.reader.lock().await.take();
-        let reader = match reader_opt {
-            Some(r) => r,
-            None => {
-                return Err(CodexError::ResponseError(
-                    "Session reader not initialized".to_string(),
-                ));
+        // Take reader from mutex - we exclusively own it now
+        let reader = {
+            let reader_opt = session.reader.lock().await.take();
+            match reader_opt {
+                Some(r) => r,
+                None => {
+                    return Err(CodexError::ResponseError(
+                        "Session reader not initialized".to_string(),
+                    ));
+                }
             }
-        };
+        }; // lock guard dropped here
 
-        // Prevent reader from being dropped if task is cancelled during await
+        // Wrap in ManuallyDrop to prevent drop when going out of scope
+        // This is necessary because we need to return the reader to the mutex
+        // even if read_line() panics or the future is cancelled
         let mut reader = std::mem::ManuallyDrop::new(reader);
 
         let result = reader.read_line(&mut line).await;
 
-        // Restore reader to mutex (reader is dropped from ManuallyDrop here)
-        // Use a fresh lock to avoid holding the original lock across the await
-        {
-            let mut guard = session.reader.lock().await;
-            // SAFETY: We exclusively own reader via ManuallyDrop and are restoring it here
-            *guard = Some(unsafe { std::mem::ManuallyDrop::take(&mut reader) });
-        }
+        // Restore reader to mutex - must happen even if read_line panicked or got cancelled
+        // to avoid leaking the reader. ManuallyDrop::take() extracts the BufReader
+        // without running its destructor, allowing us to put it back in the mutex.
+        // SAFETY: We exclusively own `reader` at this point - it was taken from the mutex
+        // above and no other code can access it. The mutex protects access to the reader
+        // during normal operation, and ManuallyDrop ensures we can return it.
+        let mut guard = session.reader.lock().await;
+        *guard = Some(unsafe { std::mem::ManuallyDrop::take(&mut reader) });
 
         match result {
             Ok(0) => Ok(None),
@@ -355,28 +360,29 @@ impl CodexClient {
         let timeout = std::time::Duration::from_millis(timeout_ms);
         let mut line = String::new();
 
-        // Extract reader from mutex
-        let reader_opt = session.reader.lock().await.take();
-        let reader = match reader_opt {
-            Some(r) => r,
-            None => {
-                return Err(CodexError::ResponseError(
-                    "Session reader not initialized".to_string(),
-                ));
+        // Take reader from mutex - we exclusively own it now
+        let reader = {
+            let reader_opt = session.reader.lock().await.take();
+            match reader_opt {
+                Some(r) => r,
+                None => {
+                    return Err(CodexError::ResponseError(
+                        "Session reader not initialized".to_string(),
+                    ));
+                }
             }
-        };
+        }; // lock guard dropped here
 
-        // Prevent reader from being dropped if task is cancelled during await
+        // Wrap in ManuallyDrop to prevent drop when going out of scope
         let mut reader = std::mem::ManuallyDrop::new(reader);
 
         let result = tokio::time::timeout(timeout, reader.read_line(&mut line)).await;
 
-        // Restore reader to mutex
-        {
-            let mut guard = session.reader.lock().await;
-            // SAFETY: We exclusively own reader via ManuallyDrop and are restoring it here
-            *guard = Some(unsafe { std::mem::ManuallyDrop::take(&mut reader) });
-        }
+        // Restore reader to mutex - must happen even if timeout or cancellation occurred
+        // SAFETY: Same as read_event - we exclusively own the reader and ManuallyDrop::take()
+        // extracts it without running the destructor
+        let mut guard = session.reader.lock().await;
+        *guard = Some(unsafe { std::mem::ManuallyDrop::take(&mut reader) });
 
         match result {
             Ok(Ok(0)) => Err(CodexError::ResponseTimeout),

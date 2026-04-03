@@ -108,7 +108,9 @@ pub async fn run_http_server(port: u16, state: Arc<Mutex<OrchestratorRuntimeStat
 
     info!(port = port, "HTTP server listening on {}", addr);
 
-    axum::serve(listener, app).await.expect("Server error");
+    if let Err(e) = axum::serve(listener, app).await {
+        warn!(port = port, "HTTP server error: {}", e);
+    }
 }
 
 async fn dashboard_handler(State(state): State<AppState>) -> Html<String> {

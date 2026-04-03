@@ -83,8 +83,8 @@ impl LinearClient {
         mut after: Option<String>,
     ) -> Result<Vec<Issue>, LinearError> {
         let query = r#"
-        query SymphonyLinearPoll($stateNames: [String!]!, $first: Int!, $after: String) {
-            issues(filter: {state: {name: {in: $stateNames}}}, first: $first, after: $after) {
+        query SymphonyLinearPoll($projectSlug: String!, $stateNames: [String!]!, $first: Int!, $relationFirst: Int!, $after: String) {
+            issues(filter: {project: {slugId: {eq: $projectSlug}}, state: {name: {in: $stateNames}}}, first: $first, after: $after) {
                 nodes {
                     id
                     identifier
@@ -96,7 +96,7 @@ impl LinearClient {
                     url
                     assignee { id }
                     labels { nodes { name } }
-                    inverseRelations(first: 50) {
+                    inverseRelations(first: $relationFirst) {
                         nodes {
                             type
                             issue {
@@ -121,9 +121,11 @@ impl LinearClient {
 
         loop {
             let variables = serde_json::json!({
+                "projectSlug": self.project_slug,
                 "stateNames": state_names,
                 "first": 50,
-                "after": after
+                "relationFirst": 50,
+                "after": after.as_ref()
             });
 
             let body = self.graphql(query, variables).await?;
@@ -183,7 +185,7 @@ impl LinearClient {
                     labels { nodes { name } }
                     inverseRelations(first: $relationFirst) {
                         nodes {
-                            type
+                            relationType: type
                             issue {
                                 id
                                 identifier
@@ -299,6 +301,12 @@ impl LinearClient {
             }
 
             if !status.is_success() {
+                // Try to parse error details from response body
+                if let Ok(error_body) = response.json::<Value>().await {
+                    if let Some(errors) = error_body.get("errors") {
+                        return Err(LinearError::GraphQLErrors(errors.to_string()));
+                    }
+                }
                 return Err(LinearError::ApiStatus(status.as_u16() as i32));
             }
 
