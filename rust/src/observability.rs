@@ -86,7 +86,11 @@ pub fn init_logging() {
         .try_init();
 }
 
-pub async fn run_http_server(port: u16, state: Arc<Mutex<OrchestratorRuntimeState>>) {
+pub async fn run_http_server(
+    port: u16,
+    state: Arc<Mutex<OrchestratorRuntimeState>>,
+    shutdown_rx: tokio::sync::watch::Receiver<bool>,
+) {
     let app_state = AppState { runtime: state };
 
     let app = Router::new()
@@ -108,8 +112,27 @@ pub async fn run_http_server(port: u16, state: Arc<Mutex<OrchestratorRuntimeStat
 
     info!(port = port, "HTTP server listening on {}", addr);
 
-    if let Err(e) = axum::serve(listener, app).await {
-        warn!(port = port, "HTTP server error: {}", e);
+    // Create a future that completes when shutdown signal is received
+    let shutdown_future = async {
+        let mut rx = shutdown_rx;
+        while rx.changed().await.is_ok() {
+            if *rx.borrow() {
+                info!("HTTP server received shutdown signal");
+                break;
+            }
+        }
+    };
+
+    // Race the server against the shutdown signal
+    tokio::select! {
+        result = axum::serve(listener, app) => {
+            if let Err(e) = result {
+                warn!(port = port, "HTTP server error: {}", e);
+            }
+        }
+        _ = shutdown_future => {
+            info!("HTTP server shutting down");
+        }
     }
 }
 

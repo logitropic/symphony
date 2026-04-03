@@ -145,10 +145,11 @@ impl LinearClient {
                 .get("hasNextPage")
                 .and_then(|h| h.as_bool())
                 .unwrap_or(false);
-            after = page_info
-                .get("endCursor")
-                .and_then(|e| e.as_str())
-                .map(|s| s.to_string());
+            // Update after cursor for next page, or break if no more pages
+            after = match page_info.get("endCursor").and_then(|e| e.as_str()).map(|s| s.to_string()) {
+                Some(cursor) if has_next_page => Some(cursor),
+                _ => None,
+            };
 
             let issues: Vec<Issue> = nodes
                 .iter()

@@ -68,8 +68,9 @@ async fn main() -> anyhow::Result<()> {
     if let Some(port) = config.server.port() {
         if port > 0 {
             let state_for_http = shared_state.clone();
+            let shutdown_rx_http = shutdown_rx.clone();
             tokio::spawn(async move {
-                run_http_server(port as u16, state_for_http).await;
+                run_http_server(port as u16, state_for_http, shutdown_rx_http).await;
             });
         }
     }
