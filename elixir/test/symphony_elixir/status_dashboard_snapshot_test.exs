@@ -11,7 +11,7 @@ defmodule SymphonyElixir.StatusDashboardSnapshotTest do
        %{
          running: [],
          retrying: [],
-         codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+         agent_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
          rate_limits: nil
        }}
 
@@ -36,7 +36,7 @@ defmodule SymphonyElixir.StatusDashboardSnapshotTest do
        %{
          running: [],
          retrying: [],
-         codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+         agent_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
          rate_limits: nil
        }}
 
@@ -68,7 +68,7 @@ defmodule SymphonyElixir.StatusDashboardSnapshotTest do
            })
          ],
          retrying: [],
-         codex_totals: %{
+         agent_totals: %{
            input_tokens: 250_000,
            output_tokens: 18_500,
            total_tokens: 268_500,
@@ -126,7 +126,7 @@ defmodule SymphonyElixir.StatusDashboardSnapshotTest do
              error: "fourth queued retry should also render after removing the top-three limit"
            })
          ],
-         codex_totals: %{input_tokens: 18_000, output_tokens: 2_200, total_tokens: 20_200, seconds_running: 2_700},
+         agent_totals: %{input_tokens: 18_000, output_tokens: 2_200, total_tokens: 20_200, seconds_running: 2_700},
          rate_limits: %{
            limit_id: "gpt-5",
            primary: %{remaining: 0, limit: 20_000, reset_in_seconds: 95},
@@ -151,7 +151,7 @@ defmodule SymphonyElixir.StatusDashboardSnapshotTest do
              error: "error with \\nnewline"
            })
          ],
-         codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+         agent_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
          rate_limits: nil
        }}
 
@@ -182,7 +182,7 @@ defmodule SymphonyElixir.StatusDashboardSnapshotTest do
            })
          ],
          retrying: [],
-         codex_totals: %{input_tokens: 90, output_tokens: 12, total_tokens: 102, seconds_running: 75},
+         agent_totals: %{input_tokens: 90, output_tokens: 12, total_tokens: 102, seconds_running: 75},
          rate_limits: %{
            limit_id: "priority-tier",
            primary: %{remaining: 100, limit: 100, reset_in_seconds: 1},

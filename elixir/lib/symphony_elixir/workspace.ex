@@ -1,6 +1,6 @@
 defmodule SymphonyElixir.Workspace do
   @moduledoc """
-  Creates isolated per-issue workspaces for parallel Codex agents.
+  Creates isolated per-issue workspaces for parallel agents.
   """
 
   require Logger
