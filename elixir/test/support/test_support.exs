@@ -8,7 +8,7 @@ defmodule SymphonyElixir.TestSupport do
 
       alias SymphonyElixir.AgentRunner
       alias SymphonyElixir.CLI
-      alias SymphonyElixir.Codex.AppServer
+      alias SymphonyElixir.Claude.AppServer
       alias SymphonyElixir.Config
       alias SymphonyElixir.HttpServer
       alias SymphonyElixir.Linear.Client
@@ -107,10 +107,8 @@ defmodule SymphonyElixir.TestSupport do
           max_turns: 20,
           max_retry_backoff_ms: 300_000,
           max_concurrent_agents_by_state: %{},
-          claude_command: "codex app-server",
-          claude_approval_policy: %{reject: %{sandbox_approval: true, rules: true, mcp_elicitations: true}},
-          claude_thread_sandbox: "workspace-write",
-          claude_turn_sandbox_policy: nil,
+          claude_command: "claude-app-server --listen stdio://",
+          claude_permission_mode: "dontAsk",
           claude_turn_timeout_ms: 3_600_000,
           claude_read_timeout_ms: 5_000,
           claude_stall_timeout_ms: 300_000,
@@ -145,9 +143,7 @@ defmodule SymphonyElixir.TestSupport do
     max_retry_backoff_ms = Keyword.get(config, :max_retry_backoff_ms)
     max_concurrent_agents_by_state = Keyword.get(config, :max_concurrent_agents_by_state)
     claude_command = Keyword.get(config, :claude_command)
-    claude_approval_policy = Keyword.get(config, :claude_approval_policy)
-    claude_thread_sandbox = Keyword.get(config, :claude_thread_sandbox)
-    claude_turn_sandbox_policy = Keyword.get(config, :claude_turn_sandbox_policy)
+    claude_permission_mode = Keyword.get(config, :claude_permission_mode)
     claude_turn_timeout_ms = Keyword.get(config, :claude_turn_timeout_ms)
     claude_read_timeout_ms = Keyword.get(config, :claude_read_timeout_ms)
     claude_stall_timeout_ms = Keyword.get(config, :claude_stall_timeout_ms)
@@ -186,9 +182,7 @@ defmodule SymphonyElixir.TestSupport do
         "  max_concurrent_agents_by_state: #{yaml_value(max_concurrent_agents_by_state)}",
         "claude:",
         "  command: #{yaml_value(claude_command)}",
-        "  approval_policy: #{yaml_value(claude_approval_policy)}",
-        "  thread_sandbox: #{yaml_value(claude_thread_sandbox)}",
-        "  turn_sandbox_policy: #{yaml_value(claude_turn_sandbox_policy)}",
+        "  permission_mode: #{yaml_value(claude_permission_mode)}",
         "  turn_timeout_ms: #{yaml_value(claude_turn_timeout_ms)}",
         "  read_timeout_ms: #{yaml_value(claude_read_timeout_ms)}",
         "  stall_timeout_ms: #{yaml_value(claude_stall_timeout_ms)}",

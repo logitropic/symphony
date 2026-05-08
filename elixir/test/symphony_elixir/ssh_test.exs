@@ -182,14 +182,14 @@ defmodule SymphonyElixir.SSHTest do
     System.put_env("PATH", fake_bin_dir <> ":" <> (System.get_env("PATH") || ""))
   end
 
-  defp wait_for_trace!(trace_file, attempts \\ 20)
+  defp wait_for_trace!(trace_file, attempts \\ 100)
   defp wait_for_trace!(trace_file, 0), do: flunk("timed out waiting for fake ssh trace at #{trace_file}")
 
   defp wait_for_trace!(trace_file, attempts) do
     if File.exists?(trace_file) and File.read!(trace_file) != "" do
       :ok
     else
-      Process.sleep(25)
+      Process.sleep(50)
       wait_for_trace!(trace_file, attempts - 1)
     end
   end

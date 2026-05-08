@@ -93,16 +93,16 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
           <article class="metric-card">
             <p class="metric-label">Total tokens</p>
-            <p class="metric-value numeric"><%= format_int(@payload.agent_totals.total_tokens) %></p>
+            <p class="metric-value numeric"><%= format_int(@payload.claude_totals.total_tokens) %></p>
             <p class="metric-detail numeric">
-              In <%= format_int(@payload.agent_totals.input_tokens) %> / Out <%= format_int(@payload.agent_totals.output_tokens) %>
+              In <%= format_int(@payload.claude_totals.input_tokens) %> / Out <%= format_int(@payload.claude_totals.output_tokens) %>
             </p>
           </article>
 
           <article class="metric-card">
             <p class="metric-label">Runtime</p>
             <p class="metric-value numeric"><%= format_runtime_seconds(total_runtime_seconds(@payload, @now)) %></p>
-            <p class="metric-detail">Total agent runtime across completed and active sessions.</p>
+            <p class="metric-detail">Total Claude runtime across completed and active sessions.</p>
           </article>
         </section>
 
@@ -144,7 +144,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                     <th>State</th>
                     <th>Session</th>
                     <th>Runtime / turns</th>
-                    <th>Agent update</th>
+                    <th>Claude update</th>
                     <th>Tokens</th>
                   </tr>
                 </thead>
@@ -262,7 +262,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
   end
 
   defp completed_runtime_seconds(payload) do
-    payload.agent_totals.seconds_running || 0
+    payload.claude_totals.seconds_running || 0
   end
 
   defp total_runtime_seconds(payload, now) do
