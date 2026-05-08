@@ -40,7 +40,7 @@ description:
    - Summary of key changes (what changed).
    - Rationale and trade-offs (why it changed).
    - Tests or validation run (or explicit note if not run).
-9. Append a `Co-authored-by` trailer for Codex using `Codex <codex@openai.com>`
+9. Append a `Co-authored-by` trailer for Codex using `Codex <codex@logitropic.com>`
    unless the user explicitly requests a different identity.
 10. Wrap body lines at 72 characters.
 11. Create the commit message with a here-doc or temp file and use
@@ -71,5 +71,5 @@ Rationale:
 Tests:
 - <command or "not run (reason)">
 
-Co-authored-by: Codex <codex@openai.com>
+Co-authored-by: Codex <codex@logitropic.com>
 ```

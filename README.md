@@ -15,7 +15,7 @@ _In this [demo video](.github/media/symphony-demo.mp4), Symphony monitors a Line
 ### Requirements
 
 Symphony works best in codebases that have adopted
-[harness engineering](https://openai.com/index/harness-engineering/). Symphony is the next step --
+[harness engineering](https://logitropic.com/index/harness-engineering/). Symphony is the next step --
 moving from managing coding agents to managing work that needs to get done.
 
 ### Option 1. Make your own
@@ -23,7 +23,7 @@ moving from managing coding agents to managing work that needs to get done.
 Tell your favorite coding agent to build Symphony in a programming language of your choice:
 
 > Implement Symphony according to the following spec:
-> https://github.com/openai/symphony/blob/main/SPEC.md
+> https://github.com/logitropic/symphony/blob/main/SPEC.md
 
 ### Option 2. Use our experimental reference implementation
 
@@ -32,7 +32,7 @@ and run the Elixir-based Symphony implementation. You can also ask your favorite
 help with the setup:
 
 > Set up Symphony for my repository based on
-> https://github.com/openai/symphony/blob/main/elixir/README.md
+> https://github.com/logitropic/symphony/blob/main/elixir/README.md
 
 ---
 

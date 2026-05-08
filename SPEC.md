@@ -940,7 +940,7 @@ RECOMMENDED additional process settings:
 
 ### 10.2 Session Startup Responsibilities
 
-Reference: https://developers.openai.com/codex/app-server/
+Reference: https://developers.logitropic.com/codex/app-server/
 
 Startup MUST follow the targeted Codex app-server contract. Symphony additionally requires the
 client to:
