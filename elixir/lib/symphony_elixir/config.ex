@@ -20,6 +20,14 @@ defmodule SymphonyElixir.Config do
   {% endif %}
   """
 
+  @type claude_runtime_settings :: %{
+          command: String.t(),
+          permission_mode: String.t(),
+          turn_timeout_ms: pos_integer(),
+          read_timeout_ms: pos_integer(),
+          stall_timeout_ms: non_neg_integer()
+        }
+
   @spec settings() :: {:ok, Schema.t()} | {:error, term()}
   def settings do
     case Workflow.current() do
@@ -80,6 +88,52 @@ defmodule SymphonyElixir.Config do
       validate_semantics(settings)
     end
   end
+
+  @spec claude_runtime_settings(Path.t() | nil, keyword()) ::
+          {:ok, claude_runtime_settings()} | {:error, term()}
+  def claude_runtime_settings(_workspace \\ nil, _opts \\ []) do
+    with {:ok, settings} <- settings() do
+      {:ok,
+       %{
+         command: claude_command(settings),
+         permission_mode: settings.claude.permission_mode,
+         turn_timeout_ms: settings.claude.turn_timeout_ms,
+         read_timeout_ms: settings.claude.read_timeout_ms,
+         stall_timeout_ms: settings.claude.stall_timeout_ms
+       }}
+    end
+  end
+
+  @spec agent_runtime_settings(Path.t() | nil, keyword()) ::
+          {:ok, claude_runtime_settings()} | {:error, term()}
+  def agent_runtime_settings(workspace \\ nil, opts \\ []) do
+    claude_runtime_settings(workspace, opts)
+  end
+
+  @spec claude_command() :: String.t()
+  def claude_command do
+    settings!() |> claude_command()
+  end
+
+  @spec claude_command(Schema.t()) :: String.t()
+  def claude_command(%Schema{} = settings) do
+    case settings.claude.command do
+      command when is_binary(command) -> command
+      _ -> default_claude_command()
+    end
+  end
+
+  @spec agent_command() :: String.t()
+  def agent_command do
+    claude_command()
+  end
+
+  @spec agent_command(Schema.t()) :: String.t()
+  def agent_command(%Schema{} = settings) do
+    claude_command(settings)
+  end
+
+  defp default_claude_command, do: "claude-app-server --listen stdio://"
 
   defp validate_semantics(settings) do
     cond do

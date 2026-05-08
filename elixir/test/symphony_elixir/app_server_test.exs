@@ -76,35 +76,37 @@ defmodule SymphonyElixir.AppServerTest do
     end
   end
 
-  test "app server passes explicit turn sandbox policies through unchanged" do
+  test "app server launches Claude sessions with Claude-compatible startup payloads" do
     test_root =
       Path.join(
         System.tmp_dir!(),
-        "symphony-elixir-app-server-supported-turn-policies-#{System.unique_integer([:positive])}"
+        "symphony-elixir-app-server-claude-provider-#{System.unique_integer([:positive])}"
       )
+
+    previous_path = System.get_env("PATH")
+    previous_trace = System.get_env("SYMP_TEST_CLAUDE_TRACE")
+
+    on_exit(fn ->
+      restore_env("PATH", previous_path)
+      restore_env("SYMP_TEST_CLAUDE_TRACE", previous_trace)
+    end)
 
     try do
       workspace_root = Path.join(test_root, "workspaces")
-      workspace = Path.join(workspace_root, "MT-1001")
-      codex_binary = Path.join(test_root, "fake-codex")
-      trace_file = Path.join(test_root, "codex-supported-turn-policies.trace")
-      previous_trace = System.get_env("SYMP_TEST_CODEx_TRACE")
+      workspace = Path.join(workspace_root, "MT-CLAUDE")
+      claude_binary = Path.join(test_root, "claude-app-server")
+      trace_file = Path.join(test_root, "claude-provider.trace")
 
-      on_exit(fn ->
-        if is_binary(previous_trace) do
-          System.put_env("SYMP_TEST_CODEx_TRACE", previous_trace)
-        else
-          System.delete_env("SYMP_TEST_CODEx_TRACE")
-        end
-      end)
-
-      System.put_env("SYMP_TEST_CODEx_TRACE", trace_file)
       File.mkdir_p!(workspace)
+      assert {:ok, canonical_workspace} = SymphonyElixir.PathSafety.canonicalize(workspace)
+      System.put_env("PATH", test_root <> ":" <> (previous_path || ""))
+      System.put_env("SYMP_TEST_CLAUDE_TRACE", trace_file)
 
-      File.write!(codex_binary, """
+      File.write!(claude_binary, """
       #!/bin/sh
-      trace_file="${SYMP_TEST_CODEx_TRACE:-/tmp/codex-supported-turn-policies.trace}"
+      trace_file="${SYMP_TEST_CLAUDE_TRACE:-/tmp/claude-provider.trace}"
       count=0
+      printf 'ARGV:%s\\n' "$*" >> "$trace_file"
 
       while IFS= read -r line; do
         count=$((count + 1))
@@ -115,13 +117,14 @@ defmodule SymphonyElixir.AppServerTest do
             printf '%s\\n' '{"id":1,"result":{}}'
             ;;
           2)
-            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-1001"}}}'
             ;;
           3)
-            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-1001"}}}'
+            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-claude"}}}'
             ;;
           4)
-            printf '%s\\n' '{"method":"turn/completed"}'
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-claude"}}}'
+            printf '%s\\n' '{"method":"usage/update","params":{"thread_id":"thread-claude","turn_id":"turn-claude","usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3}}}'
+            printf '%s\\n' '{"method":"turn/completed","params":{"status":"completed","usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3}}}'
             exit 0
             ;;
           *)
@@ -131,53 +134,100 @@ defmodule SymphonyElixir.AppServerTest do
       done
       """)
 
-      File.chmod!(codex_binary, 0o755)
+      File.chmod!(claude_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(), workspace_root: workspace_root)
 
       issue = %Issue{
-        id: "issue-supported-turn-policies",
-        identifier: "MT-1001",
-        title: "Validate explicit turn sandbox policy passthrough",
-        description: "Ensure runtime startup forwards configured turn sandbox policies unchanged",
+        id: "issue-claude-provider",
+        identifier: "MT-CLAUDE",
+        title: "Run Claude provider",
+        description: "Validate Claude app-server integration",
         state: "In Progress",
-        url: "https://example.org/issues/MT-1001",
+        url: "https://example.org/issues/MT-CLAUDE",
         labels: ["backend"]
       }
 
-      policy_cases = [
-        %{"type" => "dangerFullAccess"},
-        %{"type" => "externalSandbox", "profile" => "remote-ci"},
-        %{"type" => "workspaceWrite", "writableRoots" => ["relative/path"], "networkAccess" => true},
-        %{"type" => "futureSandbox", "nested" => %{"flag" => true}}
-      ]
+      on_message = fn message -> send(self(), {:app_server_message, message}) end
 
-      Enum.each(policy_cases, fn configured_policy ->
-        File.rm(trace_file)
+      run_result =
+        try do
+          AppServer.run(workspace, "Use Claude from Symphony", issue, on_message: on_message)
+        after
+          restore_env("PATH", previous_path)
+        end
 
-        write_workflow_file!(Workflow.workflow_file_path(),
-          workspace_root: workspace_root,
-          codex_command: "#{codex_binary} app-server",
-          codex_turn_sandbox_policy: configured_policy
-        )
+      assert {:ok, _result} = run_result
 
-        assert {:ok, _result} = AppServer.run(workspace, "Validate supported turn policy", issue)
+      trace = File.read!(trace_file)
+      lines = String.split(trace, "\n", trim: true)
 
-        trace = File.read!(trace_file)
-        lines = String.split(trace, "\n", trim: true)
+      assert argv_line = Enum.find(lines, &String.starts_with?(&1, "ARGV:"))
+      assert argv_line =~ "--listen stdio://"
 
-        assert Enum.any?(lines, fn line ->
-                 if String.starts_with?(line, "JSON:") do
-                   line
-                   |> String.trim_leading("JSON:")
-                   |> Jason.decode!()
-                   |> then(fn payload ->
-                     payload["method"] == "turn/start" &&
-                       get_in(payload, ["params", "sandboxPolicy"]) == configured_policy
-                   end)
-                 else
-                   false
-                 end
-               end)
-      end)
+      json_messages =
+        lines
+        |> Enum.filter(&String.starts_with?(&1, "JSON:"))
+        |> Enum.map(fn line ->
+          line
+          |> String.trim_leading("JSON:")
+          |> Jason.decode!()
+        end)
+
+      assert thread_start =
+               Enum.find(json_messages, &(&1["method"] == "thread/start"))
+
+      assert get_in(thread_start, ["params", "cwd"]) == canonical_workspace
+      assert get_in(thread_start, ["params", "permissionMode"]) == "dontAsk"
+      refute Map.has_key?(thread_start["params"], "approvalPolicy")
+      refute Map.has_key?(thread_start["params"], "sandbox")
+      refute Map.has_key?(thread_start["params"], "dynamicTools")
+
+      assert turn_start =
+               Enum.find(json_messages, &(&1["method"] == "turn/start"))
+
+      assert get_in(turn_start, ["params", "threadId"]) == "thread-claude"
+      assert get_in(turn_start, ["params", "cwd"]) == canonical_workspace
+      assert get_in(turn_start, ["params", "title"]) == "MT-CLAUDE: Run Claude provider"
+
+      assert get_in(turn_start, ["params", "input"]) == [
+               %{"type" => "text", "text" => "Use Claude from Symphony"}
+             ]
+
+      refute Map.has_key?(turn_start["params"], "approvalPolicy")
+      refute Map.has_key?(turn_start["params"], "sandboxPolicy")
+
+      assert_received {:app_server_message,
+                       %{event: :session_started}}
+
+      assert_received {:app_server_message,
+                       %{
+                         event: :notification,
+                         payload: %{
+                           "method" => "usage/update",
+                           "params" => %{
+                             "usage" => %{
+                               "input_tokens" => 1,
+                               "output_tokens" => 2,
+                               "total_tokens" => 3
+                             }
+                           }
+                         }
+                       }}
+
+      assert_received {:app_server_message,
+                       %{
+                         event: :turn_completed,
+                         details: %{
+                           "params" => %{
+                             "usage" => %{
+                               "input_tokens" => 1,
+                               "output_tokens" => 2,
+                               "total_tokens" => 3
+                             }
+                           }
+                         }
+                       }}
     after
       File.rm_rf(test_root)
     end
@@ -193,24 +243,24 @@ defmodule SymphonyElixir.AppServerTest do
     try do
       workspace_root = Path.join(test_root, "workspaces")
       workspace = Path.join(workspace_root, "MT-88")
-      codex_binary = Path.join(test_root, "fake-codex")
-      trace_file = Path.join(test_root, "codex-input.trace")
-      previous_trace = System.get_env("SYMP_TEST_CODEx_TRACE")
+      claude_binary = Path.join(test_root, "fake-claude")
+      trace_file = Path.join(test_root, "claude-input.trace")
+      previous_trace = System.get_env("SYMP_TEST_CLAUDE_TRACE")
 
       on_exit(fn ->
         if is_binary(previous_trace) do
-          System.put_env("SYMP_TEST_CODEx_TRACE", previous_trace)
+          System.put_env("SYMP_TEST_CLAUDE_TRACE", previous_trace)
         else
-          System.delete_env("SYMP_TEST_CODEx_TRACE")
+          System.delete_env("SYMP_TEST_CLAUDE_TRACE")
         end
       end)
 
-      System.put_env("SYMP_TEST_CODEx_TRACE", trace_file)
+      System.put_env("SYMP_TEST_CLAUDE_TRACE", trace_file)
       File.mkdir_p!(workspace)
 
-      File.write!(codex_binary, """
+      File.write!(claude_binary, """
       #!/bin/sh
-      trace_file="${SYMP_TEST_CODEx_TRACE:-/tmp/codex-input.trace}"
+      trace_file="${SYMP_TEST_CLAUDE_TRACE:-/tmp/claude-input.trace}"
       count=0
       while IFS= read -r line; do
         count=$((count + 1))
@@ -236,18 +286,18 @@ defmodule SymphonyElixir.AppServerTest do
       done
       """)
 
-      File.chmod!(codex_binary, 0o755)
+      File.chmod!(claude_binary, 0o755)
 
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: workspace_root,
-        codex_command: "#{codex_binary} app-server"
+        claude_command: "#{claude_binary} app-server"
       )
 
       issue = %Issue{
         id: "issue-input",
         identifier: "MT-88",
         title: "Input needed",
-        description: "Cannot satisfy codex input",
+        description: "Cannot satisfy claude input",
         state: "In Progress",
         url: "https://example.org/issues/MT-88",
         labels: ["backend"]
@@ -272,10 +322,10 @@ defmodule SymphonyElixir.AppServerTest do
     try do
       workspace_root = Path.join(test_root, "workspaces")
       workspace = Path.join(workspace_root, "MT-89")
-      codex_binary = Path.join(test_root, "fake-codex")
+      claude_binary = Path.join(test_root, "fake-claude")
       File.mkdir_p!(workspace)
 
-      File.write!(codex_binary, """
+      File.write!(claude_binary, """
       #!/bin/sh
       count=0
       while IFS= read -r _line; do
@@ -299,11 +349,11 @@ defmodule SymphonyElixir.AppServerTest do
       done
       """)
 
-      File.chmod!(codex_binary, 0o755)
+      File.chmod!(claude_binary, 0o755)
 
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: workspace_root,
-        codex_command: "#{codex_binary} app-server"
+        claude_command: "#{claude_binary} app-server"
       )
 
       issue = %Issue{
@@ -325,7 +375,7 @@ defmodule SymphonyElixir.AppServerTest do
     end
   end
 
-  test "app server auto-approves command execution approval requests when approval policy is never" do
+  test "app server auto-approves command execution approval requests when Claude permission mode bypasses approvals" do
     test_root =
       Path.join(
         System.tmp_dir!(),
@@ -335,24 +385,24 @@ defmodule SymphonyElixir.AppServerTest do
     try do
       workspace_root = Path.join(test_root, "workspaces")
       workspace = Path.join(workspace_root, "MT-89")
-      codex_binary = Path.join(test_root, "fake-codex")
-      trace_file = Path.join(test_root, "codex-auto-approve.trace")
-      previous_trace = System.get_env("SYMP_TEST_CODex_TRACE")
+      claude_binary = Path.join(test_root, "fake-claude")
+      trace_file = Path.join(test_root, "claude-auto-approve.trace")
+      previous_trace = System.get_env("SYMP_TEST_CLAUDE_TRACE")
 
       on_exit(fn ->
         if is_binary(previous_trace) do
-          System.put_env("SYMP_TEST_CODex_TRACE", previous_trace)
+          System.put_env("SYMP_TEST_CLAUDE_TRACE", previous_trace)
         else
-          System.delete_env("SYMP_TEST_CODex_TRACE")
+          System.delete_env("SYMP_TEST_CLAUDE_TRACE")
         end
       end)
 
-      System.put_env("SYMP_TEST_CODex_TRACE", trace_file)
+      System.put_env("SYMP_TEST_CLAUDE_TRACE", trace_file)
       File.mkdir_p!(workspace)
 
-      File.write!(codex_binary, """
+      File.write!(claude_binary, """
       #!/bin/sh
-      trace_file="${SYMP_TEST_CODex_TRACE:-/tmp/codex-auto-approve.trace}"
+      trace_file="${SYMP_TEST_CLAUDE_TRACE:-/tmp/claude-auto-approve.trace}"
       count=0
       while IFS= read -r line; do
         count=$((count + 1))
@@ -382,12 +432,12 @@ defmodule SymphonyElixir.AppServerTest do
       done
       """)
 
-      File.chmod!(codex_binary, 0o755)
+      File.chmod!(claude_binary, 0o755)
 
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: workspace_root,
-        codex_command: "#{codex_binary} app-server",
-        codex_approval_policy: "never"
+        claude_command: "#{claude_binary} app-server",
+        claude_permission_mode: "bypassPermissions"
       )
 
       issue = %Issue{
@@ -401,6 +451,7 @@ defmodule SymphonyElixir.AppServerTest do
       }
 
       assert {:ok, _result} = AppServer.run(workspace, "Handle approval request", issue)
+      assert {:ok, canonical_workspace} = SymphonyElixir.PathSafety.canonicalize(workspace)
 
       trace = File.read!(trace_file)
       lines = String.split(trace, "\n", trim: true)
@@ -427,19 +478,8 @@ defmodule SymphonyElixir.AppServerTest do
                    |> Jason.decode!()
 
                  payload["id"] == 2 and
-                   case get_in(payload, ["params", "dynamicTools"]) do
-                     [
-                       %{
-                         "description" => description,
-                         "inputSchema" => %{"required" => ["query"]},
-                         "name" => "linear_graphql"
-                       }
-                     ] ->
-                       description =~ "Linear"
-
-                     _ ->
-                       false
-                   end
+                   get_in(payload, ["params", "cwd"]) == canonical_workspace and
+                   get_in(payload, ["params", "permissionMode"]) == "bypassPermissions"
                else
                  false
                end
@@ -472,24 +512,24 @@ defmodule SymphonyElixir.AppServerTest do
     try do
       workspace_root = Path.join(test_root, "workspaces")
       workspace = Path.join(workspace_root, "MT-717")
-      codex_binary = Path.join(test_root, "fake-codex")
-      trace_file = Path.join(test_root, "codex-tool-user-input-auto-approve.trace")
-      previous_trace = System.get_env("SYMP_TEST_CODEx_TRACE")
+      claude_binary = Path.join(test_root, "fake-claude")
+      trace_file = Path.join(test_root, "claude-tool-user-input-auto-approve.trace")
+      previous_trace = System.get_env("SYMP_TEST_CLAUDE_TRACE")
 
       on_exit(fn ->
         if is_binary(previous_trace) do
-          System.put_env("SYMP_TEST_CODEx_TRACE", previous_trace)
+          System.put_env("SYMP_TEST_CLAUDE_TRACE", previous_trace)
         else
-          System.delete_env("SYMP_TEST_CODEx_TRACE")
+          System.delete_env("SYMP_TEST_CLAUDE_TRACE")
         end
       end)
 
-      System.put_env("SYMP_TEST_CODEx_TRACE", trace_file)
+      System.put_env("SYMP_TEST_CLAUDE_TRACE", trace_file)
       File.mkdir_p!(workspace)
 
-      File.write!(codex_binary, """
+      File.write!(claude_binary, """
       #!/bin/sh
-      trace_file="${SYMP_TEST_CODEx_TRACE:-/tmp/codex-tool-user-input-auto-approve.trace}"
+      trace_file="${SYMP_TEST_CLAUDE_TRACE:-/tmp/claude-tool-user-input-auto-approve.trace}"
       count=0
       while IFS= read -r line; do
         count=$((count + 1))
@@ -519,12 +559,12 @@ defmodule SymphonyElixir.AppServerTest do
       done
       """)
 
-      File.chmod!(codex_binary, 0o755)
+      File.chmod!(claude_binary, 0o755)
 
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: workspace_root,
-        codex_command: "#{codex_binary} app-server",
-        codex_approval_policy: "never"
+        claude_command: "#{claude_binary} app-server",
+        claude_permission_mode: "bypassPermissions"
       )
 
       issue = %Issue{
@@ -571,10 +611,10 @@ defmodule SymphonyElixir.AppServerTest do
     try do
       workspace_root = Path.join(test_root, "workspaces")
       workspace = Path.join(workspace_root, "MT-718")
-      codex_binary = Path.join(test_root, "fake-codex")
+      claude_binary = Path.join(test_root, "fake-claude")
       File.mkdir_p!(workspace)
 
-      File.write!(codex_binary, """
+      File.write!(claude_binary, """
       #!/bin/sh
       count=0
       while IFS= read -r _line; do
@@ -604,12 +644,12 @@ defmodule SymphonyElixir.AppServerTest do
       done
       """)
 
-      File.chmod!(codex_binary, 0o755)
+      File.chmod!(claude_binary, 0o755)
 
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: workspace_root,
-        codex_command: "#{codex_binary} app-server",
-        codex_approval_policy: "never"
+        claude_command: "#{claude_binary} app-server",
+        claude_permission_mode: "bypassPermissions"
       )
 
       issue = %Issue{
@@ -647,24 +687,24 @@ defmodule SymphonyElixir.AppServerTest do
     try do
       workspace_root = Path.join(test_root, "workspaces")
       workspace = Path.join(workspace_root, "MT-719")
-      codex_binary = Path.join(test_root, "fake-codex")
-      trace_file = Path.join(test_root, "codex-tool-user-input-options.trace")
-      previous_trace = System.get_env("SYMP_TEST_CODEx_TRACE")
+      claude_binary = Path.join(test_root, "fake-claude")
+      trace_file = Path.join(test_root, "claude-tool-user-input-options.trace")
+      previous_trace = System.get_env("SYMP_TEST_CLAUDE_TRACE")
 
       on_exit(fn ->
         if is_binary(previous_trace) do
-          System.put_env("SYMP_TEST_CODEx_TRACE", previous_trace)
+          System.put_env("SYMP_TEST_CLAUDE_TRACE", previous_trace)
         else
-          System.delete_env("SYMP_TEST_CODEx_TRACE")
+          System.delete_env("SYMP_TEST_CLAUDE_TRACE")
         end
       end)
 
-      System.put_env("SYMP_TEST_CODEx_TRACE", trace_file)
+      System.put_env("SYMP_TEST_CLAUDE_TRACE", trace_file)
       File.mkdir_p!(workspace)
 
-      File.write!(codex_binary, """
+      File.write!(claude_binary, """
       #!/bin/sh
-      trace_file="${SYMP_TEST_CODEx_TRACE:-/tmp/codex-tool-user-input-options.trace}"
+      trace_file="${SYMP_TEST_CLAUDE_TRACE:-/tmp/claude-tool-user-input-options.trace}"
       count=0
       while IFS= read -r line; do
         count=$((count + 1))
@@ -694,11 +734,11 @@ defmodule SymphonyElixir.AppServerTest do
       done
       """)
 
-      File.chmod!(codex_binary, 0o755)
+      File.chmod!(claude_binary, 0o755)
 
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: workspace_root,
-        codex_command: "#{codex_binary} app-server"
+        claude_command: "#{claude_binary} app-server"
       )
 
       issue = %Issue{
@@ -747,24 +787,24 @@ defmodule SymphonyElixir.AppServerTest do
     try do
       workspace_root = Path.join(test_root, "workspaces")
       workspace = Path.join(workspace_root, "MT-90")
-      codex_binary = Path.join(test_root, "fake-codex")
-      trace_file = Path.join(test_root, "codex-tool-call.trace")
-      previous_trace = System.get_env("SYMP_TEST_CODEx_TRACE")
+      claude_binary = Path.join(test_root, "fake-claude")
+      trace_file = Path.join(test_root, "claude-tool-call.trace")
+      previous_trace = System.get_env("SYMP_TEST_CLAUDE_TRACE")
 
       on_exit(fn ->
         if is_binary(previous_trace) do
-          System.put_env("SYMP_TEST_CODEx_TRACE", previous_trace)
+          System.put_env("SYMP_TEST_CLAUDE_TRACE", previous_trace)
         else
-          System.delete_env("SYMP_TEST_CODEx_TRACE")
+          System.delete_env("SYMP_TEST_CLAUDE_TRACE")
         end
       end)
 
-      System.put_env("SYMP_TEST_CODEx_TRACE", trace_file)
+      System.put_env("SYMP_TEST_CLAUDE_TRACE", trace_file)
       File.mkdir_p!(workspace)
 
-      File.write!(codex_binary, """
+      File.write!(claude_binary, """
       #!/bin/sh
-      trace_file="${SYMP_TEST_CODEx_TRACE:-/tmp/codex-tool-call.trace}"
+      trace_file="${SYMP_TEST_CLAUDE_TRACE:-/tmp/claude-tool-call.trace}"
       count=0
       while IFS= read -r line; do
         count=$((count + 1))
@@ -794,11 +834,11 @@ defmodule SymphonyElixir.AppServerTest do
       done
       """)
 
-      File.chmod!(codex_binary, 0o755)
+      File.chmod!(claude_binary, 0o755)
 
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: workspace_root,
-        codex_command: "#{codex_binary} app-server"
+        claude_command: "#{claude_binary} app-server"
       )
 
       issue = %Issue{
@@ -848,24 +888,24 @@ defmodule SymphonyElixir.AppServerTest do
     try do
       workspace_root = Path.join(test_root, "workspaces")
       workspace = Path.join(workspace_root, "MT-90A")
-      codex_binary = Path.join(test_root, "fake-codex")
-      trace_file = Path.join(test_root, "codex-supported-tool-call.trace")
-      previous_trace = System.get_env("SYMP_TEST_CODEx_TRACE")
+      claude_binary = Path.join(test_root, "fake-claude")
+      trace_file = Path.join(test_root, "claude-supported-tool-call.trace")
+      previous_trace = System.get_env("SYMP_TEST_CLAUDE_TRACE")
 
       on_exit(fn ->
         if is_binary(previous_trace) do
-          System.put_env("SYMP_TEST_CODEx_TRACE", previous_trace)
+          System.put_env("SYMP_TEST_CLAUDE_TRACE", previous_trace)
         else
-          System.delete_env("SYMP_TEST_CODEx_TRACE")
+          System.delete_env("SYMP_TEST_CLAUDE_TRACE")
         end
       end)
 
-      System.put_env("SYMP_TEST_CODEx_TRACE", trace_file)
+      System.put_env("SYMP_TEST_CLAUDE_TRACE", trace_file)
       File.mkdir_p!(workspace)
 
-      File.write!(codex_binary, """
+      File.write!(claude_binary, """
       #!/bin/sh
-      trace_file="${SYMP_TEST_CODEx_TRACE:-/tmp/codex-supported-tool-call.trace}"
+      trace_file="${SYMP_TEST_CLAUDE_TRACE:-/tmp/claude-supported-tool-call.trace}"
       count=0
       while IFS= read -r line; do
         count=$((count + 1))
@@ -895,11 +935,11 @@ defmodule SymphonyElixir.AppServerTest do
       done
       """)
 
-      File.chmod!(codex_binary, 0o755)
+      File.chmod!(claude_binary, 0o755)
 
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: workspace_root,
-        codex_command: "#{codex_binary} app-server"
+        claude_command: "#{claude_binary} app-server"
       )
 
       issue = %Issue{
@@ -970,24 +1010,24 @@ defmodule SymphonyElixir.AppServerTest do
     try do
       workspace_root = Path.join(test_root, "workspaces")
       workspace = Path.join(workspace_root, "MT-90B")
-      codex_binary = Path.join(test_root, "fake-codex")
-      trace_file = Path.join(test_root, "codex-tool-call-failed.trace")
-      previous_trace = System.get_env("SYMP_TEST_CODEx_TRACE")
+      claude_binary = Path.join(test_root, "fake-claude")
+      trace_file = Path.join(test_root, "claude-tool-call-failed.trace")
+      previous_trace = System.get_env("SYMP_TEST_CLAUDE_TRACE")
 
       on_exit(fn ->
         if is_binary(previous_trace) do
-          System.put_env("SYMP_TEST_CODEx_TRACE", previous_trace)
+          System.put_env("SYMP_TEST_CLAUDE_TRACE", previous_trace)
         else
-          System.delete_env("SYMP_TEST_CODEx_TRACE")
+          System.delete_env("SYMP_TEST_CLAUDE_TRACE")
         end
       end)
 
-      System.put_env("SYMP_TEST_CODEx_TRACE", trace_file)
+      System.put_env("SYMP_TEST_CLAUDE_TRACE", trace_file)
       File.mkdir_p!(workspace)
 
-      File.write!(codex_binary, """
+      File.write!(claude_binary, """
       #!/bin/sh
-      trace_file="${SYMP_TEST_CODEx_TRACE:-/tmp/codex-tool-call-failed.trace}"
+      trace_file="${SYMP_TEST_CLAUDE_TRACE:-/tmp/claude-tool-call-failed.trace}"
       count=0
       while IFS= read -r line; do
         count=$((count + 1))
@@ -1017,11 +1057,11 @@ defmodule SymphonyElixir.AppServerTest do
       done
       """)
 
-      File.chmod!(codex_binary, 0o755)
+      File.chmod!(claude_binary, 0o755)
 
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: workspace_root,
-        codex_command: "#{codex_binary} app-server"
+        claude_command: "#{claude_binary} app-server"
       )
 
       issue = %Issue{
@@ -1076,10 +1116,10 @@ defmodule SymphonyElixir.AppServerTest do
     try do
       workspace_root = Path.join(test_root, "workspaces")
       workspace = Path.join(workspace_root, "MT-91")
-      codex_binary = Path.join(test_root, "fake-codex")
+      claude_binary = Path.join(test_root, "fake-claude")
       File.mkdir_p!(workspace)
 
-      File.write!(codex_binary, """
+      File.write!(claude_binary, """
       #!/bin/sh
       count=0
       while IFS= read -r line; do
@@ -1107,11 +1147,11 @@ defmodule SymphonyElixir.AppServerTest do
       done
       """)
 
-      File.chmod!(codex_binary, 0o755)
+      File.chmod!(claude_binary, 0o755)
 
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: workspace_root,
-        codex_command: "#{codex_binary} app-server"
+        claude_command: "#{claude_binary} app-server"
       )
 
       issue = %Issue{
@@ -1130,7 +1170,7 @@ defmodule SymphonyElixir.AppServerTest do
     end
   end
 
-  test "app server captures codex side output and logs it through Logger" do
+  test "app server captures claude side output and logs it through Logger" do
     test_root =
       Path.join(
         System.tmp_dir!(),
@@ -1140,10 +1180,10 @@ defmodule SymphonyElixir.AppServerTest do
     try do
       workspace_root = Path.join(test_root, "workspaces")
       workspace = Path.join(workspace_root, "MT-92")
-      codex_binary = Path.join(test_root, "fake-codex")
+      claude_binary = Path.join(test_root, "fake-claude")
       File.mkdir_p!(workspace)
 
-      File.write!(codex_binary, """
+      File.write!(claude_binary, """
       #!/bin/sh
       count=0
       while IFS= read -r line; do
@@ -1171,18 +1211,18 @@ defmodule SymphonyElixir.AppServerTest do
       done
       """)
 
-      File.chmod!(codex_binary, 0o755)
+      File.chmod!(claude_binary, 0o755)
 
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: workspace_root,
-        codex_command: "#{codex_binary} app-server"
+        claude_command: "#{claude_binary} app-server"
       )
 
       issue = %Issue{
         id: "issue-stderr",
         identifier: "MT-92",
         title: "Capture stderr",
-        description: "Ensure codex stderr is captured and logged",
+        description: "Ensure claude stderr is captured and logged",
         state: "In Progress",
         url: "https://example.org/issues/MT-92",
         labels: ["backend"]
@@ -1199,7 +1239,7 @@ defmodule SymphonyElixir.AppServerTest do
 
       assert_received {:app_server_message, %{event: :turn_completed}}
       refute_received {:app_server_message, %{event: :malformed}}
-      assert log =~ "Codex turn stream output: warning: this is stderr noise"
+      assert log =~ "Claude turn stream output: warning: this is stderr noise"
     after
       File.rm_rf(test_root)
     end
@@ -1215,10 +1255,10 @@ defmodule SymphonyElixir.AppServerTest do
     try do
       workspace_root = Path.join(test_root, "workspaces")
       workspace = Path.join(workspace_root, "MT-93")
-      codex_binary = Path.join(test_root, "fake-codex")
+      claude_binary = Path.join(test_root, "fake-claude")
       File.mkdir_p!(workspace)
 
-      File.write!(codex_binary, """
+      File.write!(claude_binary, """
       #!/bin/sh
       count=0
       while IFS= read -r line; do
@@ -1246,11 +1286,11 @@ defmodule SymphonyElixir.AppServerTest do
       done
       """)
 
-      File.chmod!(codex_binary, 0o755)
+      File.chmod!(claude_binary, 0o755)
 
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: workspace_root,
-        codex_command: "#{codex_binary} app-server"
+        claude_command: "#{claude_binary} app-server"
       )
 
       issue = %Issue{
@@ -1335,14 +1375,14 @@ defmodule SymphonyElixir.AppServerTest do
 
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: "/remote/workspaces",
-        codex_command: "fake-remote-codex app-server"
+        claude_command: "fake-remote-claude app-server"
       )
 
       issue = %Issue{
         id: "issue-remote",
         identifier: "MT-REMOTE",
         title: "Run remote app server",
-        description: "Validate ssh-backed codex startup",
+        description: "Validate ssh-backed claude startup",
         state: "In Progress",
         url: "https://example.org/issues/MT-REMOTE",
         labels: ["backend"]
@@ -1364,16 +1404,7 @@ defmodule SymphonyElixir.AppServerTest do
       assert argv_line =~ "cd "
       assert argv_line =~ remote_workspace
       assert argv_line =~ "exec "
-      assert argv_line =~ "fake-remote-codex app-server"
-
-      expected_turn_policy = %{
-        "type" => "workspaceWrite",
-        "writableRoots" => [remote_workspace],
-        "readOnlyAccess" => %{"type" => "fullAccess"},
-        "networkAccess" => false,
-        "excludeTmpdirEnvVar" => false,
-        "excludeSlashTmp" => false
-      }
+      assert argv_line =~ "fake-remote-claude app-server"
 
       assert Enum.any?(lines, fn line ->
                if String.starts_with?(line, "JSON:") do
@@ -1397,7 +1428,7 @@ defmodule SymphonyElixir.AppServerTest do
                  |> then(fn payload ->
                    payload["method"] == "turn/start" &&
                      get_in(payload, ["params", "cwd"]) == remote_workspace &&
-                     get_in(payload, ["params", "sandboxPolicy"]) == expected_turn_policy
+                     get_in(payload, ["params", "title"]) == "MT-REMOTE: Run remote app server"
                  end)
                else
                  false

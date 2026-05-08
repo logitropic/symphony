@@ -231,13 +231,13 @@ Fields:
 - `session_id` (string, `<thread_id>-<turn_id>`)
 - `thread_id` (string)
 - `turn_id` (string)
-- `agent_app_server_pid` (string or null)
-- `last_agent_event` (string/enum or null)
-- `last_agent_timestamp` (timestamp or null)
-- `last_agent_message` (summarized payload)
-- `agent_input_tokens` (integer)
-- `agent_output_tokens` (integer)
-- `agent_total_tokens` (integer)
+- `claude_app_server_pid` (string or null)
+- `last_claude_event` (string/enum or null)
+- `last_claude_timestamp` (timestamp or null)
+- `last_claude_message` (summarized payload)
+- `claude_input_tokens` (integer)
+- `claude_output_tokens` (integer)
+- `claude_total_tokens` (integer)
 - `last_reported_input_tokens` (integer)
 - `last_reported_output_tokens` (integer)
 - `last_reported_total_tokens` (integer)
@@ -269,8 +269,8 @@ Fields:
 - `claimed` (set of issue IDs reserved/running/retrying)
 - `retry_attempts` (map `issue_id -> RetryEntry`)
 - `completed` (set of issue IDs; bookkeeping only, not dispatch gating)
-- `agent_totals` (aggregate tokens + runtime seconds)
-- `agent_rate_limits` (latest rate-limit snapshot from agent events)
+- `claude_totals` (aggregate tokens + runtime seconds)
+- `claude_rate_limits` (latest rate-limit snapshot from agent events)
 
 ### 4.2 Stable Identifiers and Normalization Rules
 
@@ -409,6 +409,12 @@ Fields:
 
 Fields:
 
+- `command` (string shell command, OPTIONAL)
+  - Overrides the app-server command.
+  - Default: `claude-app-server --listen stdio://`.
+- `permission_mode` (string)
+  - Default: `dontAsk`
+  - Sent to Claude as the app-server permission mode.
 - `max_concurrent_agents` (integer)
   - Default: `10`
   - Changes SHOULD be re-applied at runtime and affect subsequent dispatch decisions.
@@ -428,23 +434,12 @@ Fields:
 
 Fields:
 
-For Claude-owned config values such as `approval_policy`, `thread_sandbox`, and
-`turn_sandbox_policy`, supported values are defined by the targeted Claude app-server version.
-Implementors SHOULD treat them as pass-through Claude config values rather than relying on a
-hand-maintained enum in this spec. To inspect the installed Claude schema, consult the relevant
-definitions referenced by `v2/ThreadStartParams.json` and `v2/TurnStartParams.json`. Implementations
-MAY validate these fields locally if they want stricter startup checks.
-
 - `command` (string shell command)
-  - Default: `claude app-server`
+  - Default: `claude-app-server --listen stdio://`
   - The runtime launches this command via `bash -lc` in the workspace directory.
   - The launched process MUST speak a compatible app-server protocol over stdio.
-- `approval_policy` (Claude `AskForApproval` value)
-  - Default: implementation-defined.
-- `thread_sandbox` (Claude `SandboxMode` value)
-  - Default: implementation-defined.
-- `turn_sandbox_policy` (Claude `SandboxPolicy` value)
-  - Default: implementation-defined.
+- `permission_mode` (Claude permission mode string)
+  - Default: `dontAsk`.
 - `turn_timeout_ms` (integer)
   - Default: `3600000` (1 hour)
 - `read_timeout_ms` (integer)
@@ -586,10 +581,8 @@ not require recognizing or validating extension fields unless that extension is 
 - `agent.max_turns`: integer, default `20`
 - `agent.max_retry_backoff_ms`: integer, default `300000` (5m)
 - `agent.max_concurrent_agents_by_state`: map of positive integers, default `{}`
-- `claude.command`: shell command string, default `claude app-server`
-- `claude.approval_policy`: Claude `AskForApproval` value, default implementation-defined
-- `claude.thread_sandbox`: Claude `SandboxMode` value, default implementation-defined
-- `claude.turn_sandbox_policy`: Claude `SandboxPolicy` value, default implementation-defined
+- `claude.command`: shell command string, default `claude-app-server --listen stdio://`
+- `claude.permission_mode`: Claude permission mode, default `dontAsk`
 - `claude.turn_timeout_ms`: integer, default `3600000`
 - `claude.read_timeout_ms`: integer, default `5000`
 - `claude.stall_timeout_ms`: integer, default `300000`
@@ -672,7 +665,7 @@ Distinct terminal reasons are important because retry logic and logs differ.
   - Update aggregate runtime totals.
   - Schedule exponential-backoff retry.
 
-- `Agent Update Event`
+- `Claude Update Event`
   - Update live session fields, token counters, and rate limits.
 
 - `Retry Timer Fired`
@@ -782,7 +775,7 @@ Reconciliation runs every tick and has two parts.
 Part A: Stall detection
 
 - For each running issue, compute `elapsed_ms` since:
-  - `last_agent_timestamp` if any event has been seen, else
+  - `last_claude_timestamp` if any event has been seen, else
   - `started_at`
 - If `elapsed_ms > claude.stall_timeout_ms`, terminate the worker and queue a retry.
 - If `stall_timeout_ms <= 0`, skip stall detection entirely.
@@ -922,16 +915,22 @@ Protocol source of truth:
 
 Subprocess launch parameters:
 
-- Command: `claude.command`
-- Invocation: `bash -lc <claude.command>`
+- Command: the resolved provider command
+- Invocation: `bash -lc <resolved provider command>`
 - Working directory: workspace path
-- Transport/framing: the protocol transport required by the targeted Claude app-server version
+- Transport/framing: stdio JSON-RPC using the selected provider's compatible app-server
 
 Notes:
 
-- The default command is `claude app-server`.
-- Approval policy, sandbox policy, cwd, prompt input, and OPTIONAL tool declarations are supplied
-  using fields supported by the targeted Codex app-server version.
+- Claude uses `claude-app-server --listen stdio://` by default.
+- `claude-app-server` is installed from the `logitropic/claude-app-server` npm GitHub dependency
+  and is separate from Claude Code's `claude` binary.
+- For Claude, Symphony sends Claude-compatible `thread/start` and `turn/start` payloads with cwd,
+  text input, title, and permission mode; it omits sandbox fields.
+- Claude provider execution requires both `logitropic/claude-app-server` and
+  `@anthropic-ai/claude-code`. Claude Code supplies local authentication and runtime/tool setup.
+  Claude dynamic tool injection is not guaranteed unless the Claude app-server implements compatible
+  calls.
 
 RECOMMENDED additional process settings:
 
@@ -939,7 +938,7 @@ RECOMMENDED additional process settings:
 
 ### 10.2 Session Startup Responsibilities
 
-Reference: (Claude app-server integration; contact Anthropic for documentation)
+Reference: https://github.com/logitropic/claude-app-server
 
 Startup MUST follow the targeted Claude app-server contract. Symphony additionally requires the
 client to:
@@ -952,8 +951,8 @@ client to:
 - Start the first turn with the rendered issue prompt.
 - Start later in-worker continuation turns on the same live thread with continuation guidance rather
   than resending the original issue prompt.
-- Supply the implementation's documented approval and sandbox policy using fields supported by the
-  targeted protocol.
+- Supply the implementation's documented permission mode using fields supported by the targeted
+  protocol.
 - Include issue-identifying metadata, such as `<issue.identifier>: <issue.title>`, when the targeted
   protocol supports turn or session titles.
 - Advertise implemented client-side tools using the targeted protocol.
@@ -998,7 +997,7 @@ include:
 
 - `event` (enum/string)
 - `timestamp` (UTC timestamp)
-- `agent_app_server_pid` (if available)
+- `claude_app_server_pid` (if available)
 - OPTIONAL `usage` map (token counts)
 - payload fields as needed
 
@@ -1103,7 +1102,7 @@ Timeouts:
 
 Error mapping (RECOMMENDED normalized categories):
 
-- `agent_not_found`
+- `claude_not_found`
 - `invalid_workspace_cwd`
 - `response_timeout`
 - `turn_timeout`
@@ -1280,7 +1279,7 @@ SHOULD return:
 - `running` (list of running session rows)
 - each running row SHOULD include `turn_count`
 - `retrying` (list of retry queue rows)
-- `agent_totals`
+- `claude_totals`
   - `input_tokens`
   - `output_tokens`
   - `total_tokens`
@@ -1422,7 +1421,7 @@ Minimum endpoints:
           "error": "no available orchestrator slots"
         }
       ],
-      "agent_totals": {
+      "claude_totals": {
         "input_tokens": 5000,
         "output_tokens": 2400,
         "total_tokens": 7400,
@@ -1465,10 +1464,10 @@ Minimum endpoints:
       },
       "retry": null,
       "logs": {
-        "agent_session_logs": [
+        "claude_session_logs": [
           {
             "label": "latest",
-            "path": "/var/log/symphony/agent/MT-649/latest.log",
+            "path": "/var/log/symphony/claude/MT-649/latest.log",
             "url": null
           }
         ]
@@ -1646,7 +1645,7 @@ Implications:
 
 ### 15.5 Harness Hardening Guidance
 
-Running Codex agents against repositories, issue trackers, and other inputs that can contain
+Running Claude agents against repositories, issue trackers, and other inputs that can contain
 sensitive data or externally-controlled content can be dangerous. A permissive deployment can lead
 to data leaks, destructive mutations, or full machine compromise if the agent is induced to execute
 harmful commands or use overly-powerful integrations.
@@ -1689,8 +1688,8 @@ function start_service():
     claimed: set(),
     retry_attempts: {},
     completed: set(),
-    agent_totals: {input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
-    agent_rate_limits: null
+    claude_totals: {input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+    claude_rate_limits: null
   }
 
   validation = validate_dispatch_config()
@@ -1782,13 +1781,13 @@ function dispatch_issue(issue, state, attempt):
     identifier: issue.identifier,
     issue,
     session_id: null,
-    agent_app_server_pid: null,
-    last_agent_message: null,
-    last_agent_event: null,
-    last_agent_timestamp: null,
-    agent_input_tokens: 0,
-    agent_output_tokens: 0,
-    agent_total_tokens: 0,
+    claude_app_server_pid: null,
+    last_claude_message: null,
+    last_claude_event: null,
+    last_claude_timestamp: null,
+    claude_input_tokens: 0,
+    claude_output_tokens: 0,
+    claude_total_tokens: 0,
     last_reported_input_tokens: 0,
     last_reported_output_tokens: 0,
     last_reported_total_tokens: 0,
@@ -1831,7 +1830,7 @@ function run_agent_attempt(issue, attempt, orchestrator_channel):
       session=session,
       prompt=prompt,
       issue=issue,
-      on_message=(msg) -> send(orchestrator_channel, {agent_update, issue.id, msg})
+      on_message=(msg) -> send(orchestrator_channel, {claude_update, issue.id, msg})
     )
 
     if turn_result failed:
@@ -1943,7 +1942,7 @@ Unless otherwise noted, Sections 17.1 through 17.7 are `Core Conformance`. Bulle
 - `tracker.api_key` works (including `$VAR` indirection)
 - `$VAR` resolution works for tracker API key and path values
 - `~` path expansion works
-- `claude.command` is preserved as a shell command string
+- `claude.command` is preserved as a shell command string and defaults to `claude-app-server --listen stdio://`
 - Per-state concurrency override map normalizes state names and ignores invalid values
 - Prompt template renders `issue` and `attempt`
 - Prompt rendering fails on unknown variables (strict mode)
@@ -2076,7 +2075,8 @@ Use the same validation profiles as Section 17:
 - Workspace lifecycle hooks (`after_create`, `before_run`, `after_run`, `before_remove`)
 - Hook timeout config (`hooks.timeout_ms`, default `60000`)
 - Coding-agent app-server subprocess client with JSON line protocol
-- Claude launch command config (`claude.command`, default `claude app-server`)
+- Runtime dependencies on `logitropic/claude-app-server` and `@anthropic-ai/claude-code`
+- Claude launch command config (`claude.command`, default `claude-app-server --listen stdio://`)
 - Strict prompt rendering with `issue` and `attempt` variables
 - Exponential retry queue with continuation retries after normal exit
 - Configurable retry backoff cap (`agent.max_retry_backoff_ms`, default 5m)

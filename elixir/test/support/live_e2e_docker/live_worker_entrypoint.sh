@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-install -d -m 700 /root/.ssh /root/.codex
+install -d -m 700 /root/.ssh /root/.claude
 
 if [ ! -s /run/symphony/ssh/authorized_key.pub ]; then
   echo "missing authorized key at /run/symphony/ssh/authorized_key.pub" >&2

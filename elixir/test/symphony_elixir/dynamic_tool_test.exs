@@ -1,7 +1,7 @@
-defmodule SymphonyElixir.Codex.DynamicToolTest do
+defmodule SymphonyElixir.Claude.DynamicToolTest do
   use SymphonyElixir.TestSupport
 
-  alias SymphonyElixir.Codex.DynamicTool
+  alias SymphonyElixir.Claude.DynamicTool
 
   test "tool_specs advertises the linear_graphql input contract" do
     assert [
